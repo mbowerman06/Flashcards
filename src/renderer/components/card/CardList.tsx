@@ -1,0 +1,512 @@
+import { useEffect, useState, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { useCardStore } from '../../stores/card-store'
+import { useDeckStore } from '../../stores/deck-store'
+import { useUIStore } from '../../stores/ui-store'
+import { parseContent, contentPreview } from '../../lib/card-content'
+import * as api from '../../api/ipc-client'
+
+interface DeckTimeStats {
+  totalTimeMs: number
+  avgTimePerCardMs: number
+  totalReviews: number
+  fastestCardId: number | null
+  fastestCardMs: number
+  slowestCardId: number | null
+  slowestCardMs: number
+}
+
+function formatTime(ms: number): string {
+  if (ms === 0) return '-'
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remaining = seconds % 60
+  if (minutes < 60) return `${minutes}m ${remaining}s`
+  const hours = Math.floor(minutes / 60)
+  const remMin = minutes % 60
+  return `${hours}h ${remMin}m`
+}
+
+type SortMode = 'newest' | 'oldest' | 'az' | 'za'
+
+export default function CardList() {
+  const { deckId } = useParams<{ deckId: string }>()
+  const { cards, fetchCards, removeCard, removeCards } = useCardStore()
+  const { decks } = useDeckStore()
+  const {
+    cardSortMode: sortMode, setCardSortMode: setSortMode,
+    filterTagId, setFilterTagId,
+    selectedCards, setSelectedCards
+  } = useUIStore()
+  const navigate = useNavigate()
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
+  const [bulkAction, setBulkAction] = useState<'move' | 'duplicate' | 'addtag' | 'removetag' | null>(null)
+  const [tags, setTags] = useState<{ id: number; name: string; color: string }[]>([])
+  const [cardTagMap, setCardTagMap] = useState<Record<number, number[]>>({})
+  const [newTagName, setNewTagName] = useState('')
+  const [timeStats, setTimeStats] = useState<DeckTimeStats | null>(null)
+  const [cardTimes, setCardTimes] = useState<Record<number, { avg: number; best: number }>>({})
+  const deck = decks.find((d) => d.id === Number(deckId))
+  const numericDeckId = Number(deckId)
+
+  useEffect(() => {
+    if (numericDeckId) {
+      fetchCards(numericDeckId)
+      api.getDeckTimeStats(numericDeckId).then(setTimeStats).catch(console.error)
+      api.getCardTimeStats(numericDeckId).then(setCardTimes).catch(console.error)
+      api.getTagsByDeck(numericDeckId).then(setTags).catch(console.error)
+      api.getCardTagsForDeck(numericDeckId).then(setCardTagMap).catch(console.error)
+    }
+  }, [numericDeckId, fetchCards])
+
+  const regexValid = useMemo(() => {
+    if (!searchQuery) return true
+    try {
+      new RegExp(searchQuery, 'i')
+      return true
+    } catch {
+      return false
+    }
+  }, [searchQuery])
+
+  const filteredCards = useMemo(() => {
+    let result = [...cards]
+
+    // Filter by tag
+    if (filterTagId !== null) {
+      result = result.filter((card) => cardTagMap[card.id]?.includes(filterTagId))
+    }
+
+    if (searchQuery) {
+      result = result.filter((card) => {
+        const front = parseContent(card.front_content)
+        const back = parseContent(card.back_content)
+        const text = `${front.markdown} ${back.markdown}`
+        if (regexValid) {
+          const regex = new RegExp(searchQuery, 'i')
+          return regex.test(text)
+        }
+        return text.toLowerCase().includes(searchQuery.toLowerCase())
+      })
+    }
+
+    switch (sortMode) {
+      case 'newest':
+        result.sort((a, b) => b.created_at.localeCompare(a.created_at))
+        break
+      case 'oldest':
+        result.sort((a, b) => a.created_at.localeCompare(b.created_at))
+        break
+      case 'az':
+        result.sort((a, b) => {
+          const aText = parseContent(a.front_content).markdown.toLowerCase()
+          const bText = parseContent(b.front_content).markdown.toLowerCase()
+          return aText.localeCompare(bText)
+        })
+        break
+      case 'za':
+        result.sort((a, b) => {
+          const aText = parseContent(a.front_content).markdown.toLowerCase()
+          const bText = parseContent(b.front_content).markdown.toLowerCase()
+          return bText.localeCompare(aText)
+        })
+        break
+    }
+
+    return result
+  }, [cards, searchQuery, regexValid, sortMode, filterTagId, cardTagMap])
+
+  const handleDelete = async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    await removeCard(id)
+    setConfirmDelete(null)
+  }
+
+  return (
+    <div className="p-8 max-w-4xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold">{deck?.name ?? 'Deck'}</h2>
+          <p className="text-sm text-gray-500">{cards.length} cards</p>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={() => navigate(`/deck/${deckId}/stats`)}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+            disabled={cards.length === 0}
+          >
+            Stats
+          </button>
+          <button
+            onClick={() => {
+              const ids = filteredCards.map((c) => c.id).join(',')
+              navigate(`/deck/${deckId}/browse?cards=${ids}`)
+            }}
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium"
+            disabled={filteredCards.length === 0}
+          >
+            Browse{filterTagId !== null || searchQuery ? ` (${filteredCards.length})` : ''}
+          </button>
+          <button
+            onClick={() => navigate(`/deck/${deckId}/study`)}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+            disabled={cards.length === 0}
+          >
+            Learn
+          </button>
+          <button
+            onClick={() => navigate(`/deck/${deckId}/card/bulk`)}
+            className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors font-medium"
+          >
+            + Bulk Add
+          </button>
+          <button
+            onClick={() => navigate(`/deck/${deckId}/card/new`)}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          >
+            + Add Card
+          </button>
+        </div>
+      </div>
+
+      {/* Deck time stats summary */}
+      {timeStats && timeStats.totalReviews > 0 && (
+        <div className="grid grid-cols-4 gap-3 mb-4">
+          <div className="bg-blue-50 rounded-lg p-3 text-center">
+            <div className="text-blue-600 font-semibold text-sm">{formatTime(timeStats.totalTimeMs)}</div>
+            <div className="text-gray-500 text-xs">Total study time</div>
+          </div>
+          <div className="bg-green-50 rounded-lg p-3 text-center">
+            <div className="text-green-600 font-semibold text-sm">{formatTime(timeStats.avgTimePerCardMs)}</div>
+            <div className="text-gray-500 text-xs">Avg per card</div>
+          </div>
+          <div className="bg-purple-50 rounded-lg p-3 text-center">
+            <div className="text-purple-600 font-semibold text-sm">{formatTime(timeStats.fastestCardMs)}</div>
+            <div className="text-gray-500 text-xs">Fastest card avg</div>
+          </div>
+          <div className="bg-orange-50 rounded-lg p-3 text-center">
+            <div className="text-orange-600 font-semibold text-sm">{formatTime(timeStats.slowestCardMs)}</div>
+            <div className="text-gray-500 text-xs">Slowest card avg</div>
+          </div>
+        </div>
+      )}
+
+      {/* Search and Sort controls */}
+      {cards.length > 0 && (
+        <div className="flex gap-3 mb-4">
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search cards (regex supported)..."
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                !regexValid ? 'border-red-300' : 'border-gray-300'
+              }`}
+            />
+            {!regexValid && (
+              <span className="absolute right-3 top-2.5 text-xs text-red-500">Invalid regex</span>
+            )}
+          </div>
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="az">A - Z</option>
+            <option value="za">Z - A</option>
+          </select>
+        </div>
+      )}
+
+      {/* Tags bar */}
+      {cards.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="text-xs text-gray-400">Tags:</span>
+          <button
+            onClick={() => setFilterTagId(null)}
+            className={`px-2 py-0.5 text-xs rounded-full transition-colors ${
+              filterTagId === null ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            All
+          </button>
+          {tags.map((tag) => (
+            <span key={tag.id} className="inline-flex items-center gap-0.5">
+              <button
+                onClick={() => setFilterTagId(filterTagId === tag.id ? null : tag.id)}
+                className={`px-2 py-0.5 text-xs rounded-l-full transition-colors border ${
+                  filterTagId === tag.id
+                    ? 'text-white border-transparent'
+                    : 'border-gray-300 border-r-0 text-gray-600 hover:bg-gray-100'
+                }`}
+                style={filterTagId === tag.id ? { backgroundColor: tag.color } : undefined}
+              >
+                {tag.name}
+                <span className="ml-1 inline-block w-2 h-2 rounded-full" style={{ backgroundColor: tag.color }} />
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation()
+                  await api.deleteTag(tag.id)
+                  setTags((prev) => prev.filter((t) => t.id !== tag.id))
+                  if (filterTagId === tag.id) setFilterTagId(null)
+                }}
+                className={`px-1 py-0.5 text-xs rounded-r-full border transition-colors ${
+                  filterTagId === tag.id
+                    ? 'text-white/70 hover:text-white border-transparent'
+                    : 'border-gray-300 border-l-0 text-gray-400 hover:text-red-500 hover:bg-red-50'
+                }`}
+                style={filterTagId === tag.id ? { backgroundColor: tag.color } : undefined}
+                title="Delete tag"
+              >
+                &times;
+              </button>
+            </span>
+          ))}
+          <form
+            className="flex items-center gap-1"
+            onSubmit={async (e) => {
+              e.preventDefault()
+              if (!newTagName.trim()) return
+              const tag = await api.createTag(numericDeckId, newTagName.trim(), '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'))
+              setTags((prev) => [...prev, tag])
+              setNewTagName('')
+            }}
+          >
+            <input
+              type="text"
+              value={newTagName}
+              onChange={(e) => setNewTagName(e.target.value)}
+              placeholder="+ New tag"
+              className="px-2 py-0.5 text-xs border border-gray-300 rounded-full w-20 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </form>
+        </div>
+      )}
+
+      {/* Bulk actions */}
+      {selectedCards.size > 0 && (
+        <div className="flex items-center gap-3 mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <span className="text-sm font-medium text-blue-700">
+            {selectedCards.size} card{selectedCards.size !== 1 ? 's' : ''} selected
+          </span>
+          <button
+            onClick={() => setSelectedCards(new Set(filteredCards.map((c) => c.id)))}
+            className="text-xs text-blue-600 hover:underline"
+          >
+            Select all
+          </button>
+          <button
+            onClick={() => setSelectedCards(new Set())}
+            className="text-xs text-gray-500 hover:underline"
+          >
+            Clear
+          </button>
+          <div className="flex-1" />
+          {bulkAction === 'addtag' || bulkAction === 'removetag' ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500">{bulkAction === 'addtag' ? 'Add tag:' : 'Remove tag:'}</span>
+              {tags.map((tag) => (
+                <button
+                  key={tag.id}
+                  onClick={async () => {
+                    if (bulkAction === 'addtag') {
+                      await api.addTagToCards(tag.id, [...selectedCards])
+                    } else {
+                      for (const cardId of selectedCards) {
+                        const current = cardTagMap[cardId] || []
+                        await api.setCardTags(cardId, current.filter((t) => t !== tag.id))
+                      }
+                    }
+                    api.getCardTagsForDeck(numericDeckId).then(setCardTagMap)
+                    setBulkAction(null)
+                  }}
+                  className="px-2 py-1 text-xs rounded text-white hover:opacity-80"
+                  style={{ backgroundColor: tag.color }}
+                >
+                  {tag.name}
+                </button>
+              ))}
+              <button onClick={() => setBulkAction(null)} className="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">Cancel</button>
+            </div>
+          ) : bulkAction ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">{bulkAction === 'move' ? 'Move to:' : 'Duplicate to:'}</span>
+              {decks.filter((d) => d.id !== numericDeckId).map((d) => (
+                <button
+                  key={d.id}
+                  onClick={async () => {
+                    const ids = [...selectedCards]
+                    if (bulkAction === 'move') {
+                      await api.moveCards(ids, d.id)
+                      await fetchCards(numericDeckId)
+                    } else {
+                      await api.duplicateCards(ids, d.id)
+                    }
+                    setSelectedCards(new Set())
+                    setBulkAction(null)
+                  }}
+                  className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded hover:bg-blue-200"
+                >
+                  {d.name}
+                </button>
+              ))}
+              <button onClick={() => setBulkAction(null)} className="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">Cancel</button>
+            </div>
+          ) : confirmBulkDelete ? (
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  await removeCards([...selectedCards])
+                  setSelectedCards(new Set())
+                  setConfirmBulkDelete(false)
+                }}
+                className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
+              >
+                Delete {selectedCards.size}
+              </button>
+              <button onClick={() => setConfirmBulkDelete(false)} className="px-3 py-1 bg-gray-200 text-sm rounded hover:bg-gray-300">Cancel</button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              {tags.length > 0 && (
+                <>
+                  <button onClick={() => setBulkAction('addtag')} className="px-3 py-1 bg-purple-100 text-purple-700 text-sm rounded hover:bg-purple-200">Add tag</button>
+                  <button onClick={() => setBulkAction('removetag')} className="px-3 py-1 bg-yellow-100 text-yellow-700 text-sm rounded hover:bg-yellow-200">Remove tag</button>
+                </>
+              )}
+              <button onClick={() => setBulkAction('move')} className="px-3 py-1 bg-blue-100 text-blue-700 text-sm rounded hover:bg-blue-200">Move to...</button>
+              <button onClick={() => setBulkAction('duplicate')} className="px-3 py-1 bg-green-100 text-green-700 text-sm rounded hover:bg-green-200">Duplicate to...</button>
+              <button onClick={() => setConfirmBulkDelete(true)} className="px-3 py-1 bg-red-100 text-red-700 text-sm rounded hover:bg-red-200">Delete</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {filteredCards.length === 0 ? (
+        <div className="text-center py-16 text-gray-500">
+          {cards.length === 0 ? (
+            <>
+              <p className="text-lg mb-2">No cards yet</p>
+              <p className="text-sm">Add your first card to start studying!</p>
+            </>
+          ) : (
+            <p className="text-lg">No cards match your search</p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredCards.map((card) => {
+            const front = parseContent(card.front_content)
+            const back = parseContent(card.back_content)
+            return (
+              <div
+                key={card.id}
+                onClick={() => navigate(`/deck/${deckId}/card/${card.id}`)}
+                className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-lg hover:shadow-sm transition-shadow cursor-pointer"
+              >
+                <div className="flex items-center gap-3 mr-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedCards.has(card.id)}
+                    onChange={(e) => {
+                      const next = new Set(selectedCards)
+                      if (e.target.checked) next.add(card.id)
+                      else next.delete(card.id)
+                      setSelectedCards(next)
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex-1 min-w-0 grid grid-cols-[1fr_1fr_auto_auto] gap-4 items-center">
+                  <div className="truncate text-sm">
+                    <span className="text-gray-400 text-xs uppercase mr-2">Front</span>
+                    {contentPreview(front)}
+                  </div>
+                  <div className="truncate text-sm">
+                    <span className="text-gray-400 text-xs uppercase mr-2">Back</span>
+                    {contentPreview(back)}
+                  </div>
+                  <div className="flex gap-0.5 shrink-0 w-16 justify-end" title={
+                    cardTagMap[card.id]?.length
+                      ? cardTagMap[card.id].map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(', ')
+                      : undefined
+                  }>
+                    {(cardTagMap[card.id] || []).slice(0, 4).map((tagId) => {
+                      const tag = tags.find((t) => t.id === tagId)
+                      if (!tag) return null
+                      return (
+                        <span
+                          key={tagId}
+                          className="w-3 h-3 rounded-full inline-block shrink-0"
+                          style={{ backgroundColor: tag.color }}
+                        />
+                      )
+                    })}
+                    {(cardTagMap[card.id]?.length || 0) > 4 && (
+                      <span className="text-[9px] text-gray-400 leading-3">+{cardTagMap[card.id].length - 4}</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-400 w-32 text-right shrink-0 flex gap-2 justify-end">
+                    <span title="Best review time">
+                      <span className="text-green-300 mr-0.5">Best</span>
+                      {cardTimes[card.id] ? formatTime(cardTimes[card.id].best) : '-'}
+                    </span>
+                    <span title="Average review time">
+                      <span className="text-gray-300 mr-0.5">Avg</span>
+                      {cardTimes[card.id] ? formatTime(cardTimes[card.id].avg) : '-'}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 ml-4" onClick={(e) => e.stopPropagation()}>
+                  {confirmDelete === card.id ? (
+                    <>
+                      <button
+                        onClick={(e) => handleDelete(card.id, e)}
+                        className="px-2 py-1 bg-red-600 text-white text-xs rounded"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(null)}
+                        className="px-2 py-1 bg-gray-300 text-xs rounded"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDelete(card.id)}
+                      className="p-1.5 text-gray-400 hover:text-red-600 rounded transition-colors"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
