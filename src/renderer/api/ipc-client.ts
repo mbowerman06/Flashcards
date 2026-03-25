@@ -46,6 +46,7 @@ export const getDueCards = (deckId: number) => api().getDueCards(deckId)
 export const submitReview = (cardId: number, grade: number, timeTakenMs: number = 0) =>
   api().submitReview(cardId, grade, timeTakenMs)
 export const getStreak = (deckId?: number) => api().getStreak(deckId)
+export const fetchUrl = (url: string) => api().fetchUrl(url)
 
 // Tags
 export const getTagsByDeck = (deckId: number) => api().getTagsByDeck(deckId)
@@ -59,3 +60,12 @@ export const getSlowestCards = (deckId: number, limit: number) => api().getSlowe
 export const getDeckTimeStats = (deckId: number) => api().getDeckTimeStats(deckId)
 export const getCardTimeStats = (deckId: number) => api().getCardTimeStats(deckId)
 export const getDeckReviewHistory = (deckId: number) => api().getDeckReviewHistory(deckId)
+
+// Templates
+export const getTemplates = () => api().getTemplates()
+export const createTemplate = (name: string, front: string, back: string) => api().createTemplate(name, front, back)
+export const deleteTemplate = (id: number) => api().deleteTemplate(id)
+
+// Backup
+export const backupExport = () => api().backupExport()
+export const backupImport = (data: string) => api().backupImport(data)

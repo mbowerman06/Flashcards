@@ -133,6 +133,17 @@ function runMigrations(): void {
     )
   `)
 
+  // Card templates table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS card_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      front_content TEXT NOT NULL DEFAULT '{"markdown":"","drawing":null}',
+      back_content TEXT NOT NULL DEFAULT '{"markdown":"","drawing":null}',
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
   // Migration: add time_taken_ms if missing (existing databases)
   try {
     const cols = db.exec("PRAGMA table_info(review_history)")

@@ -45,6 +45,18 @@ const api = {
   getCardIdsByTag: (tagId: number) => ipcRenderer.invoke('tag:getCardIds', tagId),
   getSlowestCards: (deckId: number, limit: number) => ipcRenderer.invoke('study:slowestCards', deckId, limit),
 
+  // Templates
+  getTemplates: () => ipcRenderer.invoke('template:getAll'),
+  createTemplate: (name: string, front: string, back: string) => ipcRenderer.invoke('template:create', name, front, back),
+  deleteTemplate: (id: number) => ipcRenderer.invoke('template:delete', id),
+
+  // Utility
+  fetchUrl: (url: string) => ipcRenderer.invoke('util:fetchUrl', url),
+
+  // Backup
+  backupExport: () => ipcRenderer.invoke('backup:export'),
+  backupImport: (data: string) => ipcRenderer.invoke('backup:import', data),
+
   // Window controls
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),

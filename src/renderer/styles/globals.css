@@ -64,3 +64,72 @@
 .md-editor-fullheight .w-md-editor .w-md-editor-content .w-md-editor-input .w-md-editor-text {
   height: 100% !important;
 }
+
+/* Fix fullscreen editor being blocked by title bar drag region */
+.w-md-editor-fullscreen {
+  -webkit-app-region: no-drag !important;
+  z-index: 9999 !important;
+}
+
+/* Dark mode overrides */
+.dark body, .dark .bg-white { background-color: #1a1a2e; color: #e0e0e0; }
+.dark .bg-gray-50 { background-color: #16213e; }
+.dark .bg-gray-100 { background-color: #1a1a2e; }
+.dark .bg-gray-900 { background-color: #0f0f23; }
+.dark .border-gray-200 { border-color: #2a2a4a; }
+.dark .border-gray-300 { border-color: #3a3a5a; }
+.dark .text-gray-700 { color: #c0c0d0; }
+.dark .text-gray-500 { color: #8888aa; }
+.dark .text-gray-400 { color: #666688; }
+.dark input, .dark textarea, .dark select { background-color: #1a1a2e; color: #e0e0e0; border-color: #3a3a5a; }
+.dark .bg-gray-200 { background-color: #2a2a4a; }
+.dark .bg-gray-300 { background-color: #3a3a5a; }
+.dark .text-gray-700 .bg-gray-200, .dark .hover\:bg-gray-300:hover { background-color: #3a3a5a; }
+
+/* Print styles */
+@media print {
+  /* Hide sidebar, title bar, and non-print elements */
+  nav, aside, header, .no-print,
+  [class*="Sidebar"], [class*="TitleBar"],
+  .flex.flex-col.h-screen > :first-child {
+    display: none !important;
+  }
+
+  /* Make the main area take full width */
+  .flex.flex-1.min-h-0 {
+    display: block !important;
+  }
+
+  main {
+    overflow: visible !important;
+    width: 100% !important;
+  }
+
+  body {
+    background: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-grid {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .print-grid .grid {
+    gap: 8px !important;
+  }
+
+  .print-grid .border {
+    border-color: #999 !important;
+  }
+}
+
+/* Let MDEditor handle its own dark mode via data-color-mode="dark" attribute */
+/* Only override the textarea to prevent our global dark input styles from interfering */
+[data-color-mode="dark"] .w-md-editor textarea,
+[data-color-mode="dark"] .w-md-editor input {
+  background-color: inherit !important;
+  color: inherit !important;
+  border-color: inherit !important;
+}

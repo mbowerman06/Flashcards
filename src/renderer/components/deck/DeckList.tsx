@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useDeckStore } from '../../stores/deck-store'
+import * as api from '../../api/ipc-client'
 import DeckForm from './DeckForm'
 import DeckStats from './DeckStats'
 
@@ -15,6 +16,60 @@ export default function DeckList() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('newest')
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [showExportDropdown, setShowExportDropdown] = useState(false)
+  const exportDropdownRef = useRef<HTMLDivElement>(null)
+  const [searchMode, setSearchMode] = useState<'decks' | 'cards'>('decks')
+  const [cardSearchResults, setCardSearchResults] = useState<any[]>([])
+  const [deckStats, setDeckStats] = useState<Record<number, { due: number }>>({})
+
+  // Fetch due counts for all decks
+  useEffect(() => {
+    Promise.all(
+      decks.map(async (deck) => {
+        const stats = await api.getDeckStats(deck.id)
+        return [deck.id, { due: stats.due }] as [number, { due: number }]
+      })
+    ).then((results) => {
+      const map: Record<number, { due: number }> = {}
+      for (const [id, s] of results) map[id] = s
+      setDeckStats(map)
+    }).catch(console.error)
+  }, [decks])
+
+  // Card search
+  const performCardSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setCardSearchResults([])
+      return
+    }
+    try {
+      const results = await api.searchCards(query)
+      setCardSearchResults(results)
+    } catch {
+      setCardSearchResults([])
+    }
+  }, [])
+
+  // Close export dropdown on outside click
+  useEffect(() => {
+    if (!showExportDropdown) return
+    const handler = (e: MouseEvent) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(e.target as Node)) {
+        setShowExportDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showExportDropdown])
+
+  // Auto-open new deck form from Ctrl+Shift+N
+  useEffect(() => {
+    if (searchParams.get('newDeck') === '1') {
+      setShowForm(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     fetchDecks()
@@ -74,12 +129,34 @@ export default function DeckList() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold">Your Decks</h2>
         <div className="flex gap-3">
-          <button
-            onClick={() => navigate('/import')}
-            className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors font-medium"
-          >
-            Import
-          </button>
+          <div className="flex rounded-lg overflow-hidden relative" ref={exportDropdownRef}>
+            <button
+              onClick={() => navigate('/import')}
+              className="px-4 py-2 bg-green-600 text-white hover:bg-green-700 transition-colors font-medium"
+            >
+              Import
+            </button>
+            <button
+              onClick={() => setShowExportDropdown(!showExportDropdown)}
+              disabled={decks.length === 0}
+              className="px-4 py-2 bg-green-700 text-green-200 hover:bg-green-800 transition-colors font-medium border-l border-green-500 disabled:opacity-50"
+            >
+              Export
+            </button>
+            {showExportDropdown && (
+              <div className="absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[160px] py-1">
+                {decks.map((d) => (
+                  <button
+                    key={d.id}
+                    onClick={() => { setShowExportDropdown(false); navigate(`/deck/${d.id}/export`) }}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                  >
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setShowForm(true)}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
@@ -95,15 +172,38 @@ export default function DeckList() {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search decks (regex supported)..."
+            onChange={(e) => {
+              setSearchQuery(e.target.value)
+              if (searchMode === 'cards') {
+                performCardSearch(e.target.value)
+              }
+            }}
+            placeholder={searchMode === 'decks' ? 'Search decks (regex supported)...' : 'Search card content across all decks...'}
             className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-              !regexValid ? 'border-red-300' : 'border-gray-300'
+              !regexValid && searchMode === 'decks' ? 'border-red-300' : 'border-gray-300'
             }`}
           />
-          {!regexValid && (
+          {!regexValid && searchMode === 'decks' && (
             <span className="absolute right-3 top-2.5 text-xs text-red-500">Invalid regex</span>
           )}
+        </div>
+        <div className="flex rounded-lg overflow-hidden border border-gray-300">
+          <button
+            onClick={() => { setSearchMode('decks'); setCardSearchResults([]) }}
+            className={`px-3 py-2 text-sm font-medium transition-colors ${
+              searchMode === 'decks' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            Decks
+          </button>
+          <button
+            onClick={() => { setSearchMode('cards'); if (searchQuery) performCardSearch(searchQuery) }}
+            className={`px-3 py-2 text-sm font-medium transition-colors ${
+              searchMode === 'cards' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            Cards
+          </button>
         </div>
         <select
           value={sortMode}
@@ -222,6 +322,12 @@ export default function DeckList() {
                 </div>
               </div>
               <DeckStats deckId={deck.id} />
+              {deckStats[deck.id]?.due > 0 && (
+                <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-xs font-medium">
+                  <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
+                  {deckStats[deck.id].due} due
+                </div>
+              )}
               {mergingDeck === deck.id && (
                 <div className="mt-3 pt-3 border-t border-gray-200" onClick={(e) => e.stopPropagation()}>
                   <p className="text-xs text-gray-500 mb-2">Merge all cards into:</p>
@@ -244,6 +350,68 @@ export default function DeckList() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Card search results */}
+      {searchMode === 'cards' && cardSearchResults.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-lg font-semibold mb-3">Card Results</h3>
+          {(() => {
+            const grouped: Record<number, any[]> = {}
+            for (const card of cardSearchResults) {
+              if (!grouped[card.deck_id]) grouped[card.deck_id] = []
+              grouped[card.deck_id].push(card)
+            }
+            return Object.entries(grouped).map(([deckIdStr, cards]) => {
+              const deckId = Number(deckIdStr)
+              const deck = decks.find((d) => d.id === deckId)
+              return (
+                <div key={deckId} className="mb-4">
+                  <h4 className="text-sm font-medium text-gray-500 mb-2">{deck?.name ?? `Deck #${deckId}`}</h4>
+                  <div className="space-y-1">
+                    {cards.map((card: any) => {
+                      let frontText = ''
+                      let backText = ''
+                      try {
+                        const fp = JSON.parse(card.front_content)
+                        frontText = fp.markdown || ''
+                      } catch {
+                        frontText = card.front_content
+                      }
+                      try {
+                        const bp = JSON.parse(card.back_content)
+                        backText = bp.markdown || ''
+                      } catch {
+                        backText = card.back_content
+                      }
+                      return (
+                        <div
+                          key={card.id}
+                          onClick={() => navigate(`/deck/${deckId}/card/${card.id}`)}
+                          className="flex items-center gap-4 p-3 bg-white border border-gray-200 rounded-lg hover:shadow-sm cursor-pointer transition-shadow"
+                        >
+                          <div className="flex-1 min-w-0 grid grid-cols-2 gap-4">
+                            <div className="truncate text-sm">
+                              <span className="text-gray-400 text-xs uppercase mr-2">Front</span>
+                              {frontText.substring(0, 80)}
+                            </div>
+                            <div className="truncate text-sm">
+                              <span className="text-gray-400 text-xs uppercase mr-2">Back</span>
+                              {backText.substring(0, 80)}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          })()}
+        </div>
+      )}
+      {searchMode === 'cards' && searchQuery && cardSearchResults.length === 0 && (
+        <div className="mt-6 text-center text-gray-500 text-sm">No cards match your search</div>
       )}
     </div>
   )

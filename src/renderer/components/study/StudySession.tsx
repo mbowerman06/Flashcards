@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useStudyStore } from '../../stores/study-store'
 import { useDeckStore } from '../../stores/deck-store'
@@ -6,6 +6,7 @@ import StudyCard from './StudyCard'
 import RatingButtons from './RatingButtons'
 import StudyComplete from './StudyComplete'
 import * as api from '../../api/ipc-client'
+import { useUIStore } from '../../stores/ui-store'
 
 type StudyMode = 'all' | 'tag' | 'slowest'
 
@@ -21,7 +22,7 @@ export default function StudySession() {
   const { decks } = useDeckStore()
   const {
     cards, currentIndex, flipped, sessionComplete, loading,
-    reviewed, isReviewAll, cardTimes, cardStartTime, startSession, startWithCards, flipCard, rateCard, reset
+    reviewed, isReviewAll, cardTimes, startSession, startWithCards, flipCard, rateCard, reset
   } = useStudyStore()
 
   const deck = decks.find((d) => d.id === Number(deckId))
@@ -31,19 +32,6 @@ export default function StudySession() {
   const [showModeSelector, setShowModeSelector] = useState(true)
   const [tags, setTags] = useState<Tag[]>([])
   const [slowestCount, setSlowestCount] = useState(10)
-  const [elapsed, setElapsed] = useState(0)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Live timer — starts ticking when card is shown, displays when flipped
-  useEffect(() => {
-    if (timerRef.current) clearInterval(timerRef.current)
-    if (!showModeSelector && !sessionComplete && !loading && cardStartTime > 0) {
-      timerRef.current = setInterval(() => {
-        setElapsed(Date.now() - cardStartTime)
-      }, 100)
-    }
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [cardStartTime, showModeSelector, sessionComplete, loading])
 
   useEffect(() => {
     if (numericDeckId) {
@@ -81,10 +69,16 @@ export default function StudySession() {
       if (showModeSelector || sessionComplete || loading) return
       if (e.code === 'Space') { e.preventDefault(); flipCard() }
       if (flipped) {
-        if (e.key === '1') rateCard(0)
-        if (e.key === '2') rateCard(2)
-        if (e.key === '3') rateCard(4)
-        if (e.key === '4') rateCard(5)
+        const mode = useUIStore.getState().ratingMode
+        if (mode === 'simple') {
+          if (e.key === '1') rateCard(0)   // Incorrect
+          if (e.key === '2') rateCard(4)   // Correct
+        } else {
+          if (e.key === '1') rateCard(0)
+          if (e.key === '2') rateCard(2)
+          if (e.key === '3') rateCard(4)
+          if (e.key === '4') rateCard(5)
+        }
       }
     }
     window.addEventListener('keydown', handleKey)
@@ -215,16 +209,7 @@ export default function StudySession() {
       {/* Fixed footer */}
       <div className="shrink-0 pt-4 max-w-2xl mx-auto w-full">
         {flipped ? (
-          <div>
-            <div className="text-center mb-2">
-              <span className="text-sm font-mono text-gray-500">
-                {elapsed < 1000 ? `${elapsed}ms` :
-                 elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` :
-                 `${Math.floor(elapsed / 60000)}m ${Math.round((elapsed % 60000) / 1000)}s`}
-              </span>
-            </div>
-            <RatingButtons onRate={rateCard} />
-          </div>
+          <RatingButtons onRate={rateCard} />
         ) : (
           <div className="text-center">
             <button

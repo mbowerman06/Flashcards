@@ -3,6 +3,7 @@ import * as deckRepo from './repositories/deck-repository'
 import * as cardRepo from './repositories/card-repository'
 import * as reviewRepo from './repositories/review-repository'
 import * as tagRepo from './repositories/tag-repository'
+import * as templateRepo from './repositories/template-repository'
 
 function sm2(
   grade: number,
@@ -140,6 +141,47 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('study:slowestCards', (_, deckId: number, limit: number) => {
     const cardIds = reviewRepo.getSlowestCardIds(deckId, limit)
     return cardIds.map((id) => cardRepo.getCard(id)).filter(Boolean)
+  })
+
+  // Templates
+  ipcMain.handle('template:getAll', () => templateRepo.getAllTemplates())
+  ipcMain.handle('template:create', (_, name: string, front: string, back: string) => templateRepo.createTemplate(name, front, back))
+  ipcMain.handle('template:delete', (_, id: number) => templateRepo.deleteTemplate(id))
+
+  // Fetch URL content (for Quizlet import)
+  ipcMain.handle('util:fetchUrl', async (_, url: string) => {
+    const { net } = require('electron')
+    return new Promise((resolve, reject) => {
+      const request = net.request(url)
+      let data = ''
+      request.on('response', (response: any) => {
+        response.on('data', (chunk: Buffer) => { data += chunk.toString() })
+        response.on('end', () => resolve(data))
+      })
+      request.on('error', (err: Error) => reject(err.message))
+      request.end()
+    })
+  })
+
+  // Backup/Restore
+  ipcMain.handle('backup:export', () => {
+    const { readFileSync } = require('fs')
+    const { join } = require('path')
+    const { app } = require('electron')
+    const dbPath = join(app.getPath('userData'), 'flashcards.db')
+    const buffer = readFileSync(dbPath)
+    return buffer.toString('base64')
+  })
+
+  ipcMain.handle('backup:import', async (_: any, data: string) => {
+    const { writeFileSync } = require('fs')
+    const { join } = require('path')
+    const { app } = require('electron')
+    const dbPath = join(app.getPath('userData'), 'flashcards.db')
+    const buffer = Buffer.from(data, 'base64')
+    writeFileSync(dbPath, buffer)
+    app.relaunch()
+    app.exit(0)
   })
 
   // Window controls

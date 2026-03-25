@@ -5,6 +5,7 @@ import { useDeckStore } from '../../stores/deck-store'
 import { useUIStore } from '../../stores/ui-store'
 import { parseContent, contentPreview } from '../../lib/card-content'
 import * as api from '../../api/ipc-client'
+import { useToastStore } from '../../stores/toast-store'
 
 interface DeckTimeStats {
   totalTimeMs: number
@@ -29,7 +30,7 @@ function formatTime(ms: number): string {
   return `${hours}h ${remMin}m`
 }
 
-type SortMode = 'newest' | 'oldest' | 'az' | 'za'
+type SortMode = 'newest' | 'oldest' | 'az' | 'za' | 'bestTime' | 'avgTime'
 
 export default function CardList() {
   const { deckId } = useParams<{ deckId: string }>()
@@ -50,6 +51,10 @@ export default function CardList() {
   const [newTagName, setNewTagName] = useState('')
   const [timeStats, setTimeStats] = useState<DeckTimeStats | null>(null)
   const [cardTimes, setCardTimes] = useState<Record<number, { avg: number; best: number }>>({})
+  const [templates, setTemplates] = useState<{ id: number; name: string; front_content: string; back_content: string }[]>([])
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const [saveTemplateCardId, setSaveTemplateCardId] = useState<number | null>(null)
+  const [templateName, setTemplateName] = useState('')
   const deck = decks.find((d) => d.id === Number(deckId))
   const numericDeckId = Number(deckId)
 
@@ -60,6 +65,7 @@ export default function CardList() {
       api.getCardTimeStats(numericDeckId).then(setCardTimes).catch(console.error)
       api.getTagsByDeck(numericDeckId).then(setTags).catch(console.error)
       api.getCardTagsForDeck(numericDeckId).then(setCardTagMap).catch(console.error)
+      api.getTemplates().then(setTemplates).catch(console.error)
     }
   }, [numericDeckId, fetchCards])
 
@@ -115,85 +121,202 @@ export default function CardList() {
           return bText.localeCompare(aText)
         })
         break
+      case 'bestTime':
+        result.sort((a, b) => {
+          const aTime = cardTimes[a.id]?.best
+          const bTime = cardTimes[b.id]?.best
+          if (aTime == null && bTime == null) return 0
+          if (aTime == null) return 1
+          if (bTime == null) return -1
+          return aTime - bTime
+        })
+        break
+      case 'avgTime':
+        result.sort((a, b) => {
+          const aTime = cardTimes[a.id]?.avg
+          const bTime = cardTimes[b.id]?.avg
+          if (aTime == null && bTime == null) return 0
+          if (aTime == null) return 1
+          if (bTime == null) return -1
+          return aTime - bTime
+        })
+        break
     }
 
     return result
-  }, [cards, searchQuery, regexValid, sortMode, filterTagId, cardTagMap])
+  }, [cards, searchQuery, regexValid, sortMode, filterTagId, cardTagMap, cardTimes])
+
+  const toast = useToastStore()
 
   const handleDelete = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
+    const card = cards.find((c) => c.id === id)
     await removeCard(id)
     setConfirmDelete(null)
+    if (card) {
+      toast.show('Card deleted', async () => {
+        await api.createCard(numericDeckId, card.front_content, card.back_content)
+        await fetchCards(numericDeckId)
+      })
+    }
   }
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
+      {/* Header row: title + inline stats + dual buttons */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-bold">{deck?.name ?? 'Deck'}</h2>
-          <p className="text-sm text-gray-500">{cards.length} cards</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h2 className="text-2xl font-bold">{deck?.name ?? 'Deck'}</h2>
+            <p className="text-sm text-gray-500">{cards.length} cards</p>
+          </div>
+
+          {/* Inline stats with graph icon link */}
+          {timeStats && timeStats.totalReviews > 0 && (
+            <div className="flex items-center gap-3 ml-2">
+              <button
+                onClick={() => navigate(`/deck/${deckId}/stats`)}
+                className="text-gray-400 hover:text-indigo-600 transition-colors"
+                title="View full statistics"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 3v18h18M7 16v-3m4 3v-6m4 6V8m4 8V5" />
+                </svg>
+              </button>
+              <button
+                onClick={() => navigate(`/deck/${deckId}/print`)}
+                className="text-gray-400 hover:text-indigo-600 transition-colors"
+                title="Print cards"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z" />
+                </svg>
+              </button>
+              <div className="flex gap-3 text-xs text-gray-500">
+                <span title="Total study time"><span className="text-blue-500 font-medium">{formatTime(timeStats.totalTimeMs)}</span> total</span>
+                <span title="Average per card"><span className="text-green-500 font-medium">{formatTime(timeStats.avgTimePerCardMs)}</span> avg</span>
+                <span title="Fastest card"><span className="text-purple-500 font-medium">{formatTime(timeStats.fastestCardMs)}</span> fast</span>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={() => navigate(`/deck/${deckId}/stats`)}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
-            disabled={cards.length === 0}
-          >
-            Stats
-          </button>
-          <button
-            onClick={() => {
-              const ids = filteredCards.map((c) => c.id).join(',')
-              navigate(`/deck/${deckId}/browse?cards=${ids}`)
-            }}
-            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium"
-            disabled={filteredCards.length === 0}
-          >
-            Browse{filterTagId !== null || searchQuery ? ` (${filteredCards.length})` : ''}
-          </button>
-          <button
-            onClick={() => navigate(`/deck/${deckId}/study`)}
-            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
-            disabled={cards.length === 0}
-          >
-            Learn
-          </button>
-          <button
-            onClick={() => navigate(`/deck/${deckId}/card/bulk`)}
-            className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors font-medium"
-          >
-            + Bulk Add
-          </button>
-          <button
-            onClick={() => navigate(`/deck/${deckId}/card/new`)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
-          >
-            + Add Card
-          </button>
+
+        {/* Dual split buttons */}
+        <div className="flex gap-2">
+          {/* Study: Learn | Browse */}
+          <div className="flex rounded-lg overflow-hidden">
+            <button
+              onClick={() => navigate(`/deck/${deckId}/study`)}
+              disabled={cards.length === 0}
+              className="px-4 py-2 bg-green-600 text-white hover:bg-green-700 font-medium text-sm disabled:opacity-40"
+            >
+              Learn
+            </button>
+            <button
+              onClick={() => {
+                const ids = filteredCards.map((c) => c.id).join(',')
+                navigate(`/deck/${deckId}/browse?cards=${ids}`)
+              }}
+              disabled={filteredCards.length === 0}
+              className="px-2.5 py-2 bg-green-700 text-green-200 hover:bg-green-800 text-xs border-l border-green-500 disabled:opacity-40"
+              title="Browse cards"
+            >
+              Browse
+            </button>
+          </div>
+
+          {/* Game: Test | Match */}
+          <div className="flex rounded-lg overflow-hidden">
+            <button
+              onClick={() => {
+                const ids = filteredCards.map((c) => c.id).join(',')
+                navigate(`/deck/${deckId}/test?cards=${ids}`)
+              }}
+              disabled={filteredCards.length === 0}
+              className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 font-medium text-sm disabled:opacity-40"
+            >
+              Test
+            </button>
+            <button
+              onClick={() => {
+                const ids = filteredCards.map((c) => c.id).join(',')
+                navigate(`/deck/${deckId}/match?cards=${ids}`)
+              }}
+              disabled={filteredCards.length < 2}
+              className="px-2.5 py-2 bg-red-700 text-red-200 hover:bg-red-800 text-xs border-l border-red-500 disabled:opacity-40"
+              title="Matching game"
+            >
+              Match
+            </button>
+          </div>
+
+          {/* Add: Card | Bulk */}
+          <div className="flex rounded-lg overflow-hidden">
+            <button
+              onClick={() => navigate(`/deck/${deckId}/card/new`)}
+              className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 font-medium text-sm"
+            >
+              + Add
+            </button>
+            <button
+              onClick={() => navigate(`/deck/${deckId}/card/bulk`)}
+              className="px-2.5 py-2 bg-blue-700 text-blue-200 hover:bg-blue-800 text-xs border-l border-blue-500"
+              title="Bulk add cards"
+            >
+              Bulk
+            </button>
+          </div>
+
+          {/* From Template */}
+          <div className="relative">
+            <button
+              onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
+              className="px-3 py-2 bg-purple-600 text-white hover:bg-purple-700 font-medium text-sm rounded-lg"
+              title="Create card from template"
+            >
+              Template
+            </button>
+            {showTemplateDropdown && (
+              <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+                {templates.length === 0 ? (
+                  <div className="px-4 py-3 text-sm text-gray-400">No templates yet. Save a card as template first.</div>
+                ) : (
+                  <>
+                    {templates.map((tmpl) => (
+                      <div key={tmpl.id} className="flex items-center justify-between px-3 py-2 hover:bg-gray-50 group">
+                        <button
+                          onClick={async () => {
+                            const newCard = await api.createCard(numericDeckId, tmpl.front_content, tmpl.back_content)
+                            setShowTemplateDropdown(false)
+                            navigate(`/deck/${deckId}/card/${newCard.id}`)
+                          }}
+                          className="flex-1 text-left text-sm text-gray-700 truncate"
+                          title={tmpl.name}
+                        >
+                          {tmpl.name}
+                        </button>
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            await api.deleteTemplate(tmpl.id)
+                            setTemplates((prev) => prev.filter((t) => t.id !== tmpl.id))
+                          }}
+                          className="ml-2 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Delete template"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-
-      {/* Deck time stats summary */}
-      {timeStats && timeStats.totalReviews > 0 && (
-        <div className="grid grid-cols-4 gap-3 mb-4">
-          <div className="bg-blue-50 rounded-lg p-3 text-center">
-            <div className="text-blue-600 font-semibold text-sm">{formatTime(timeStats.totalTimeMs)}</div>
-            <div className="text-gray-500 text-xs">Total study time</div>
-          </div>
-          <div className="bg-green-50 rounded-lg p-3 text-center">
-            <div className="text-green-600 font-semibold text-sm">{formatTime(timeStats.avgTimePerCardMs)}</div>
-            <div className="text-gray-500 text-xs">Avg per card</div>
-          </div>
-          <div className="bg-purple-50 rounded-lg p-3 text-center">
-            <div className="text-purple-600 font-semibold text-sm">{formatTime(timeStats.fastestCardMs)}</div>
-            <div className="text-gray-500 text-xs">Fastest card avg</div>
-          </div>
-          <div className="bg-orange-50 rounded-lg p-3 text-center">
-            <div className="text-orange-600 font-semibold text-sm">{formatTime(timeStats.slowestCardMs)}</div>
-            <div className="text-gray-500 text-xs">Slowest card avg</div>
-          </div>
-        </div>
-      )}
 
       {/* Search and Sort controls */}
       {cards.length > 0 && (
@@ -221,6 +344,8 @@ export default function CardList() {
             <option value="oldest">Oldest first</option>
             <option value="az">A - Z</option>
             <option value="za">Z - A</option>
+            <option value="bestTime">Best time</option>
+            <option value="avgTime">Avg time</option>
           </select>
         </div>
       )}
@@ -364,9 +489,16 @@ export default function CardList() {
             <div className="flex gap-2">
               <button
                 onClick={async () => {
+                  const deletedCards = cards.filter((c) => selectedCards.has(c.id))
                   await removeCards([...selectedCards])
                   setSelectedCards(new Set())
                   setConfirmBulkDelete(false)
+                  toast.show(`${deletedCards.length} card(s) deleted`, async () => {
+                    for (const card of deletedCards) {
+                      await api.createCard(numericDeckId, card.front_content, card.back_content)
+                    }
+                    await fetchCards(numericDeckId)
+                  })
                 }}
                 className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
               >
@@ -466,6 +598,58 @@ export default function CardList() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 ml-4" onClick={(e) => e.stopPropagation()}>
+                  {/* Save as Template */}
+                  {saveTemplateCardId === card.id ? (
+                    <form
+                      className="flex items-center gap-1"
+                      onSubmit={async (e) => {
+                        e.preventDefault()
+                        if (!templateName.trim()) return
+                        const tmpl = await api.createTemplate(templateName.trim(), card.front_content, card.back_content)
+                        setTemplates((prev) => [...prev, tmpl])
+                        setSaveTemplateCardId(null)
+                        setTemplateName('')
+                        toast.show('Saved as template')
+                      }}
+                    >
+                      <input
+                        type="text"
+                        value={templateName}
+                        onChange={(e) => setTemplateName(e.target.value)}
+                        placeholder="Template name"
+                        className="px-2 py-1 text-xs border border-gray-300 rounded w-28 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <button type="submit" className="px-2 py-1 bg-purple-600 text-white text-xs rounded hover:bg-purple-700">Save</button>
+                      <button type="button" onClick={() => { setSaveTemplateCardId(null); setTemplateName('') }} className="px-1.5 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">X</button>
+                    </form>
+                  ) : (
+                    <button
+                      onClick={() => { setSaveTemplateCardId(card.id); setTemplateName('') }}
+                      className="p-1.5 text-gray-400 hover:text-purple-600 rounded transition-colors"
+                      title="Save as template"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      await api.createCard(numericDeckId, card.front_content, card.back_content)
+                      await fetchCards(numericDeckId)
+                      toast.show('Card duplicated')
+                    }}
+                    className="p-1.5 text-gray-400 hover:text-blue-600 rounded transition-colors"
+                    title="Duplicate card"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
                   {confirmDelete === card.id ? (
                     <>
                       <button

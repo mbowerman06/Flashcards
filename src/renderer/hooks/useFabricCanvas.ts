@@ -5,6 +5,7 @@ import {
 import katex from 'katex'
 import html2canvas from 'html2canvas'
 import type { DrawingData, PaperMode } from '../lib/card-content'
+import { useUIStore } from '../stores/ui-store'
 
 const LATEX_PATTERN = /\$\$([^$]+)\$\$|\$([^$]+)\$/
 
@@ -12,7 +13,12 @@ function containsLatex(text: string): boolean {
   return LATEX_PATTERN.test(text)
 }
 
-async function renderLatexToDataUrl(text: string, fillColor: string, fontSize: number): Promise<string> {
+interface LatexRenderResult {
+  dataUrl: string
+  scale: number  // how much to scale the image down on the canvas
+}
+
+async function renderLatexToDataUrl(text: string, fillColor: string, fontSize: number): Promise<LatexRenderResult> {
   // Replace $$...$$ (display) and $...$ (inline) with KaTeX HTML
   let html = text
   html = html.replace(/\$\$([^$]+)\$\$/g, (_, expr) => {
@@ -30,38 +36,55 @@ async function renderLatexToDataUrl(text: string, fillColor: string, fontSize: n
     }
   })
 
-  // Render into a hidden div on the main document where KaTeX fonts are loaded
+  // Render at 3x size for crisp output
+  const renderScale = 3
+  const renderFontSize = fontSize * renderScale
+
+  // Wrapper clips the render container to 1x1px so user sees nothing,
+  // but the container itself is full-size inside for accurate browser painting
+  const clipWrapper = document.createElement('div')
+  clipWrapper.style.position = 'fixed'
+  clipWrapper.style.left = '0'
+  clipWrapper.style.top = '0'
+  clipWrapper.style.width = '1px'
+  clipWrapper.style.height = '1px'
+  clipWrapper.style.overflow = 'hidden'
+  clipWrapper.style.zIndex = '-1'
+  clipWrapper.style.pointerEvents = 'none'
+  document.body.appendChild(clipWrapper)
+
   const container = document.createElement('div')
-  container.style.position = 'fixed'
-  container.style.left = '-9999px'
+  container.style.position = 'absolute'
+  container.style.left = '0'
   container.style.top = '0'
-  container.style.padding = '12px'
+  container.style.padding = '30px'
   container.style.background = 'white'
   container.style.display = 'inline-block'
-  container.style.fontSize = `${fontSize}px`
+  container.style.fontSize = `${renderFontSize}px`
   container.style.color = fillColor
-  container.style.fontFamily = 'sans-serif'
-  container.style.lineHeight = '1.6'
-  container.style.overflow = 'visible'
+  container.style.fontFamily = '"KaTeX_Main", "Times New Roman", serif'
+  container.style.lineHeight = 'normal'
   container.innerHTML = html
-  document.body.appendChild(container)
+  clipWrapper.appendChild(container)
 
-  // Wait for fonts to be ready
   await document.fonts.ready
-  // Extra frame wait for KaTeX layout to settle
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+  await new Promise((r) => setTimeout(r, 150))
 
   try {
+    const captureW = container.scrollWidth + 40
+    const captureH = container.scrollHeight + 40
+
     const canvas = await html2canvas(container, {
       backgroundColor: '#ffffff',
       scale: 2,
       logging: false,
-      width: container.scrollWidth + 8,
-      height: container.scrollHeight + 8
+      width: captureW,
+      height: captureH,
+      foreignObjectRendering: true
     })
-    return canvas.toDataURL('image/png')
+    return { dataUrl: canvas.toDataURL('image/png'), scale: 1 / (2 * renderScale) }
   } finally {
-    document.body.removeChild(container)
+    document.body.removeChild(clipWrapper)
   }
 }
 
@@ -105,16 +128,33 @@ function createArrow(
 export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricRef = useRef<Canvas | null>(null)
+  const theme = useUIStore.getState().theme
   const [activeTool, setActiveTool] = useState<Tool>('pen')
-  const [color, setColor] = useState('#000000')
+  const defaultBgColor = options.initialData?.canvasBgColor ?? (theme === 'dark' ? '#1a1a2e' : '#ffffff')
+  const [color, setColor] = useState(() => {
+    if (theme === 'dark') return '#ffffff'
+    return '#000000'
+  })
   const [strokeWidth, setStrokeWidth] = useState(3)
-  const [colorPalette, setColorPalette] = useState<string[]>([
-    '#000000', '#ff0000', '#0000ff', '#00aa00', '#ff8800',
-    '#8800ff', '#00aaaa', '#ff00ff', '#888888', '#ffffff'
-  ])
-  const [paperMode, setPaperMode] = useState<PaperMode>(options.initialData?.paperMode ?? 'plain')
-  const [margin, setMargin] = useState(options.initialData?.margin ?? 0)
-  const [gridSpacing, setGridSpacing] = useState(options.initialData?.gridSpacing ?? 30)
+  const [colorPalette, setColorPalette] = useState<string[]>(() => {
+    const base = [
+      '#000000', '#ff0000', '#0000ff', '#00aa00', '#ff8800',
+      '#8800ff', '#00aaaa', '#ff00ff', '#888888', '#ffffff'
+    ]
+    if (theme === 'dark') {
+      // Swap position 0 (black) and position 9 (white)
+      const swapped = [...base]
+      swapped[0] = '#ffffff'
+      swapped[9] = '#000000'
+      return swapped
+    }
+    return base
+  })
+  const [canvasBgColor, setCanvasBgColor] = useState<string>(defaultBgColor)
+  const uiSettings = useUIStore.getState()
+  const [paperMode, setPaperMode] = useState<PaperMode>(options.initialData?.paperMode ?? uiSettings.defaultPaperMode)
+  const [margin, setMargin] = useState(options.initialData?.margin ?? uiSettings.defaultMargin)
+  const [gridSpacing, setGridSpacing] = useState(options.initialData?.gridSpacing ?? uiSettings.defaultGridSpacing)
   const paperModeRef = useRef(paperMode)
   const marginRef = useRef(margin)
   const gridSpacingRef = useRef(gridSpacing)
@@ -131,6 +171,12 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     gridSpacingRef.current = gridSpacing
     fabricRef.current?.requestRenderAll()
   }, [gridSpacing])
+  useEffect(() => {
+    const canvas = fabricRef.current
+    if (!canvas) return
+    canvas.backgroundColor = canvasBgColor
+    canvas.requestRenderAll()
+  }, [canvasBgColor])
   const undoStack = useRef<string[]>([])
   const redoStack = useRef<string[]>([])
   const isLoadingRef = useRef(false)
@@ -207,7 +253,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     const canvas = new Canvas(canvasRef.current, {
       width: parent.clientWidth,
       height: canvasHeight,
-      backgroundColor: '#ffffff',
+      backgroundColor: defaultBgColor,
       isDrawingMode: false,
       allowTouchScrolling: false,
       fireRightClick: true,
@@ -225,7 +271,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     if (options.initialData) {
       isLoadingRef.current = true
       canvas.loadFromJSON(
-        JSON.stringify({ objects: options.initialData.objects, background: '#ffffff' })
+        JSON.stringify({ objects: options.initialData.objects, background: defaultBgColor })
       ).then(() => {
         canvas.renderAll()
         isLoadingRef.current = false
@@ -249,6 +295,21 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     canvas.on('object:modified', trackChange)
     canvas.on('object:removed', trackChange)
 
+    // Snap to grid on object move
+    canvas.on('object:moving', (opt) => {
+      if (!useUIStore.getState().snapToGrid) return
+      const mode = paperModeRef.current
+      if (mode === 'plain') return
+      const spacing = gridSpacingRef.current
+      const obj = opt.target
+      if (obj) {
+        obj.set({
+          left: Math.round((obj.left ?? 0) / spacing) * spacing,
+          top: Math.round((obj.top ?? 0) / spacing) * spacing
+        })
+      }
+    })
+
     // LaTeX rendering: when an IText exits editing and contains LaTeX, convert to image
     canvas.on('text:editing:exited', (opt) => {
       textJustExitedRef.current = true
@@ -263,7 +324,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
       // Store source text as custom property for re-editing
       renderLatexToDataUrl(origText, origColor, origFontSize)
-        .then((dataUrl) => {
+        .then(({ dataUrl, scale }) => {
           isLoadingRef.current = true
           canvas.remove(textObj)
 
@@ -272,9 +333,8 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
             const fabricImg = new FabricImage(imgEl, {
               left: origLeft,
               top: origTop,
-              // Scale down by DPR since we rendered at 2x
-              scaleX: 0.5,
-              scaleY: 0.5
+              scaleX: scale,
+              scaleY: scale
             })
             // Store the original LaTeX source for double-click re-editing
             ;(fabricImg as any)._latexSource = origText
@@ -731,7 +791,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         const pointer = canvas.getScenePoint(opt.e)
         const text = new IText('Type here', {
           left: pointer.x, top: pointer.y,
-          fontSize: 18, fill: color, fontFamily: 'sans-serif'
+          fontSize: useUIStore.getState().drawingFontSize, fill: color, fontFamily: 'sans-serif'
         })
         canvas.add(text)
         canvas.setActiveObject(text)
@@ -740,9 +800,12 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       setupPanWrapper()
     } else if (activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'arrow') {
       canvas.selection = false
+      canvas.skipTargetFind = false
       canvas.defaultCursor = 'crosshair'
 
       toolMouseDown = (opt: any) => {
+        // If clicking on an existing object, let fabric handle selection/dragging — don't create a new shape
+        if (canvas.findTarget(opt.e)) return
         const pointer = canvas.getScenePoint(opt.e)
         shapeStartRef.current = { x: pointer.x, y: pointer.y }
 
@@ -890,7 +953,8 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       viewportTransform: [...(canvas.viewportTransform || [1, 0, 0, 1, 0, 0])],
       paperMode: paperModeRef.current,
       margin: marginRef.current,
-      gridSpacing: gridSpacingRef.current
+      gridSpacing: gridSpacingRef.current,
+      canvasBgColor: (canvas.backgroundColor as string) || '#ffffff'
     }
   }, [])
 
@@ -907,6 +971,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     color, setColor, strokeWidth, setStrokeWidth,
     undo, redo, zoomBy, getDrawingData, addImageToCanvas,
     colorPalette, updatePaletteColor,
-    paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing
+    paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing,
+    canvasBgColor, setCanvasBgColor
   }
 }

@@ -21,7 +21,7 @@
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0",
     "sql.js": "^1.12.0",
-    "zustand": "^5.0.5"
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",

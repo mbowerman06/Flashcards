@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useDeckStore } from '../../stores/deck-store'
+import { parseContent } from '../../lib/card-content'
 import * as api from '../../api/ipc-client'
 
 interface DeckTimeStats {
@@ -131,6 +132,32 @@ function SimpleLineChart({
   )
 }
 
+interface CardData {
+  id: number
+  front_content: string
+  back_content: string
+  ease_factor: number
+  interval: number
+  repetition: number
+  next_review: string
+  created_at: string
+  updated_at: string
+}
+
+function getCardMaturityColor(repetition: number, interval: number): { bg: string; text: string; label: string } {
+  if (repetition === 0) return { bg: 'bg-gray-200', text: 'text-gray-600', label: 'New' }
+  if (interval < 7) return { bg: 'bg-yellow-200', text: 'text-yellow-700', label: 'Learning' }
+  if (interval < 30) return { bg: 'bg-blue-200', text: 'text-blue-700', label: 'Young' }
+  return { bg: 'bg-green-200', text: 'text-green-700', label: 'Mature' }
+}
+
+function getMaturityBarColor(repetition: number, interval: number): string {
+  if (repetition === 0) return '#9ca3af'
+  if (interval < 7) return '#eab308'
+  if (interval < 30) return '#3b82f6'
+  return '#22c55e'
+}
+
 export default function DeckStatsPage() {
   const { deckId } = useParams<{ deckId: string }>()
   const navigate = useNavigate()
@@ -138,6 +165,8 @@ export default function DeckStatsPage() {
   const [timeStats, setTimeStats] = useState<DeckTimeStats | null>(null)
   const [history, setHistory] = useState<ReviewHistoryEntry[]>([])
   const [streak, setStreak] = useState<StreakInfo | null>(null)
+  const [cards, setCards] = useState<CardData[]>([])
+  const [cardDetailsOpen, setCardDetailsOpen] = useState(false)
   const numericDeckId = Number(deckId)
   const deck = decks.find((d) => d.id === numericDeckId)
 
@@ -146,6 +175,7 @@ export default function DeckStatsPage() {
     api.getDeckTimeStats(numericDeckId).then(setTimeStats).catch(console.error)
     api.getDeckReviewHistory(numericDeckId).then(setHistory).catch(console.error)
     api.getStreak(numericDeckId).then(setStreak).catch(console.error)
+    api.getCards(numericDeckId).then(setCards).catch(console.error)
   }, [numericDeckId])
 
   const formatDate = (d: string) => {
@@ -245,6 +275,86 @@ export default function DeckStatsPage() {
           formatValue={(v) => `${Math.round(v)}`}
         />
       </div>
+
+      {/* Card Details collapsible section */}
+      {cards.length > 0 && (
+        <div className="mt-6">
+          <button
+            onClick={() => setCardDetailsOpen(!cardDetailsOpen)}
+            className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-gray-900 mb-3"
+          >
+            <svg
+              className={`w-4 h-4 transition-transform ${cardDetailsOpen ? 'rotate-90' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            Card Details ({cards.length} cards)
+          </button>
+
+          {cardDetailsOpen && (
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-200">
+                      <th className="text-left px-4 py-2 font-medium text-gray-600">Front Preview</th>
+                      <th className="text-center px-3 py-2 font-medium text-gray-600">Status</th>
+                      <th className="text-center px-3 py-2 font-medium text-gray-600">Ease</th>
+                      <th className="text-center px-3 py-2 font-medium text-gray-600">Interval</th>
+                      <th className="text-center px-3 py-2 font-medium text-gray-600">Reps</th>
+                      <th className="text-center px-3 py-2 font-medium text-gray-600">Next Review</th>
+                      <th className="px-3 py-2 font-medium text-gray-600 w-24">Maturity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cards.map((card) => {
+                      const front = parseContent(card.front_content)
+                      const preview = front.markdown.replace(/[#*_~`>\-\[\]()!]/g, '').trim()
+                      const displayPreview = preview.length > 40 ? preview.substring(0, 40) + '...' : preview || '(empty)'
+                      const maturity = getCardMaturityColor(card.repetition, card.interval)
+                      const barColor = getMaturityBarColor(card.repetition, card.interval)
+                      // Maturity bar width: scale interval, cap at 90 days for full bar
+                      const barWidth = Math.min(100, (card.interval / 90) * 100)
+                      const nextReviewDate = card.next_review ? new Date(card.next_review) : null
+                      const nextReviewStr = nextReviewDate
+                        ? `${nextReviewDate.getMonth() + 1}/${nextReviewDate.getDate()}/${nextReviewDate.getFullYear()}`
+                        : '-'
+
+                      return (
+                        <tr key={card.id} className="border-b border-gray-100 hover:bg-gray-50">
+                          <td className="px-4 py-2 text-gray-800 truncate max-w-[200px]" title={preview}>
+                            {displayPreview}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${maturity.bg} ${maturity.text}`}>
+                              {maturity.label}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-center text-gray-600">{card.ease_factor.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-center text-gray-600">{card.interval}d</td>
+                          <td className="px-3 py-2 text-center text-gray-600">{card.repetition}</td>
+                          <td className="px-3 py-2 text-center text-gray-600 text-xs">{nextReviewStr}</td>
+                          <td className="px-3 py-2">
+                            <div className="w-full bg-gray-100 rounded-full h-2" title={`${card.interval} day interval`}>
+                              <div
+                                className="h-2 rounded-full transition-all"
+                                style={{ width: `${barWidth}%`, backgroundColor: barColor }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {(!timeStats || timeStats.totalReviews === 0) && history.length === 0 && (
         <div className="text-center py-16 text-gray-500">

@@ -12,7 +12,9 @@ interface Props {
 
 export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeight }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const [measuredHeight, setMeasuredHeight] = useState(canvasHeight ?? 400)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   // Measure the container height dynamically when no fixed height is provided
   useEffect(() => {
@@ -36,7 +38,8 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
     color, setColor, strokeWidth, setStrokeWidth,
     undo, redo, zoomBy, getDrawingData, addImageToCanvas,
     colorPalette, updatePaletteColor,
-    paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing
+    paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing,
+    canvasBgColor, setCanvasBgColor
   } = useFabricCanvas({ initialData: drawing, readOnly, canvasHeight: canvasHeight ?? measuredHeight })
 
   const handleImportImage = useCallback(() => {
@@ -85,8 +88,34 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
     canvas.requestRenderAll()
   }, [fabricRef])
 
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen((prev) => !prev)
+    // Trigger a resize after the layout change settles
+    setTimeout(() => {
+      const canvas = fabricRef.current
+      if (!canvas) return
+      const parent = containerRef.current
+      if (parent && parent.clientWidth > 0 && parent.clientHeight > 0) {
+        canvas.setDimensions({ width: parent.clientWidth, height: parent.clientHeight })
+        canvas.renderAll()
+      }
+    }, 50)
+  }, [fabricRef])
+
+  // Escape key exits fullscreen
+  useEffect(() => {
+    if (!isFullscreen) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setIsFullscreen(false) }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [isFullscreen])
+
   return (
-    <div className="flex flex-col h-full">
+    <div ref={wrapperRef}
+      className={isFullscreen ? 'fixed inset-0 z-[9999] bg-white flex flex-col' : 'flex flex-col h-full'}
+      style={isFullscreen ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}>
       {!readOnly && (
         <DrawingToolbar
           activeTool={activeTool}
@@ -109,6 +138,10 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
           onMarginChange={setMargin}
           gridSpacing={gridSpacing}
           onGridSpacingChange={setGridSpacing}
+          onToggleFullscreen={toggleFullscreen}
+          isFullscreen={isFullscreen}
+          canvasColor={canvasBgColor}
+          onCanvasColorChange={setCanvasBgColor}
         />
       )}
       <div ref={containerRef} className="relative flex-1 min-h-0 overflow-hidden">

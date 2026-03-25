@@ -93,7 +93,87 @@ async function parseAnkiApkg(buffer: ArrayBuffer): Promise<ParsedCard[]> {
   return cards
 }
 
-type ImportFormat = 'csv' | 'quizlet' | 'anki'
+async function parseQuizletUrl(url: string): Promise<ParsedCard[]> {
+  const html = await api.fetchUrl(url)
+  const cards: ParsedCard[] = []
+
+  // Extract set ID from URL for API fallback
+  const setIdMatch = url.match(/quizlet\.com\/(\d+)/)
+  const setId = setIdMatch ? setIdMatch[1] : null
+
+  // Method 1: Try Quizlet's internal API directly — paginate to get ALL cards
+  if (setId) {
+    try {
+      let page = 1
+      let hasMore = true
+      while (hasMore) {
+        const apiUrl = `https://quizlet.com/webapi/3.4/studiable-item-documents?filters%5BstudiableContainerId%5D=${setId}&filters%5BstudiableContainerType%5D=1&perPage=500&page=${page}`
+        const apiResp = await api.fetchUrl(apiUrl)
+        const apiData = JSON.parse(apiResp)
+        const items = apiData?.responses?.[0]?.models?.studiableItem
+        if (items && items.length > 0) {
+          for (const item of items) {
+            const cardSides = item.cardSides || []
+            const front = cardSides.find((s: any) => s.label === 'word')?.media?.[0]?.plainText || ''
+            const back = cardSides.find((s: any) => s.label === 'definition')?.media?.[0]?.plainText || ''
+            if (front || back) cards.push({ front, back })
+          }
+          // Check if there are more pages
+          const paging = apiData?.responses?.[0]?.paging
+          hasMore = paging ? paging.page < paging.totalPages : false
+          page++
+        } else {
+          hasMore = false
+        }
+      }
+      if (cards.length > 0) return cards
+    } catch { /* continue to page scraping */ }
+  }
+
+  // Method 2: Extract from __NEXT_DATA__ JSON in page HTML
+  const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s)
+  if (nextDataMatch) {
+    try {
+      const data = JSON.parse(nextDataMatch[1])
+      const redux = data?.props?.pageProps?.dehydratedReduxStateKey
+        ? JSON.parse(data.props.pageProps.dehydratedReduxStateKey)
+        : null
+      if (redux?.studyModesCommon?.studiableData?.studiableItems) {
+        for (const item of redux.studyModesCommon.studiableData.studiableItems) {
+          const cardSides = item.cardSides || []
+          const front = cardSides.find((s: any) => s.label === 'word')?.media?.[0]?.plainText || ''
+          const back = cardSides.find((s: any) => s.label === 'definition')?.media?.[0]?.plainText || ''
+          if (front || back) cards.push({ front, back })
+        }
+        if (cards.length > 0) return cards
+      }
+    } catch { /* continue */ }
+  }
+
+  // Method 3: Regex extract word/definition pairs from page source
+  const termRegex = /"word"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+  const defRegex = /"definition"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+  const terms: string[] = []
+  const defs: string[] = []
+  let m
+  while ((m = termRegex.exec(html)) !== null) terms.push(JSON.parse(`"${m[1]}"`))
+  while ((m = defRegex.exec(html)) !== null) defs.push(JSON.parse(`"${m[1]}"`))
+
+  // Deduplicate (regex may find duplicates from different JSON structures in the page)
+  const seen = new Set<string>()
+  for (let i = 0; i < Math.min(terms.length, defs.length); i++) {
+    const key = `${terms[i]}|||${defs[i]}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      cards.push({ front: terms[i], back: defs[i] })
+    }
+  }
+
+  if (cards.length === 0) throw new Error('Could not extract flashcards from this Quizlet URL. Make sure the set is public.')
+  return cards
+}
+
+type ImportFormat = 'csv' | 'quizlet' | 'anki' | 'quizlet-url'
 
 export default function ImportCards() {
   const navigate = useNavigate()
@@ -102,6 +182,8 @@ export default function ImportCards() {
 
   const [format, setFormat] = useState<ImportFormat>('csv')
   const [pasteText, setPasteText] = useState('')
+  const [quizletUrl, setQuizletUrl] = useState('')
+  const [fetchingUrl, setFetchingUrl] = useState(false)
   const [parsedCards, setParsedCards] = useState<ParsedCard[]>([])
   const [targetDeckId, setTargetDeckId] = useState<number | 'new'>(decks[0]?.id ?? 'new')
   const [newDeckName, setNewDeckName] = useState('')
@@ -128,6 +210,20 @@ export default function ImportCards() {
     } catch (err) {
       setError(`Failed to parse file: ${err}`)
       setParsedCards([])
+    }
+  }
+
+  const handleQuizletUrlFetch = async () => {
+    if (!quizletUrl.trim()) return
+    setError('')
+    setFetchingUrl(true)
+    try {
+      const cards = await parseQuizletUrl(quizletUrl.trim())
+      setParsedCards(cards)
+    } catch (err) {
+      setError(`${err}`)
+    } finally {
+      setFetchingUrl(false)
     }
   }
 
@@ -220,7 +316,8 @@ export default function ImportCards() {
       <div className="flex gap-2 mb-6">
         {([
           { id: 'csv' as const, label: 'CSV / TSV', desc: 'Comma or tab separated' },
-          { id: 'quizlet' as const, label: 'Quizlet', desc: 'Paste or file' },
+          { id: 'quizlet' as const, label: 'Quizlet Paste', desc: 'Tab-separated text' },
+          { id: 'quizlet-url' as const, label: 'Quizlet URL', desc: 'Paste a share link' },
           { id: 'anki' as const, label: 'Anki (.apkg)', desc: 'Anki export file' }
         ]).map((f) => (
           <button
@@ -237,7 +334,28 @@ export default function ImportCards() {
       </div>
 
       {/* Input area */}
-      {format === 'anki' ? (
+      {format === 'quizlet-url' ? (
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-gray-700 mb-2">Quizlet set URL</label>
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={quizletUrl}
+              onChange={(e) => setQuizletUrl(e.target.value)}
+              placeholder="https://quizlet.com/123456789/..."
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={handleQuizletUrlFetch}
+              disabled={fetchingUrl || !quizletUrl.trim()}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50"
+            >
+              {fetchingUrl ? 'Fetching...' : 'Fetch Cards'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">Paste a Quizlet share link. The set must be public.</p>
+        </div>
+      ) : format === 'anki' ? (
         <div className="mb-6">
           <label className="block text-sm font-medium text-gray-700 mb-2">Select .apkg file</label>
           <input
