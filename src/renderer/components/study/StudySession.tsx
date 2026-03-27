@@ -47,15 +47,8 @@ export default function StudySession() {
 
   const handleStartByTag = async (tagId: number) => {
     setShowModeSelector(false)
-    const cardIds = await api.getCardIdsByTag(tagId)
-    if (cardIds.length === 0) {
-      startWithCards([])
-      return
-    }
-    const allCards = await api.getCards(numericDeckId)
-    const tagCardSet = new Set(cardIds)
-    const filtered = allCards.filter((c: any) => tagCardSet.has(c.id))
-    startWithCards(filtered)
+    const taggedCards = await api.getCardsByTag(numericDeckId, tagId)
+    startWithCards(taggedCards)
   }
 
   const handleStartSlowest = async () => {

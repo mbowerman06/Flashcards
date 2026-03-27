@@ -66,6 +66,24 @@ export const getTemplates = () => api().getTemplates()
 export const createTemplate = (name: string, front: string, back: string) => api().createTemplate(name, front, back)
 export const deleteTemplate = (id: number) => api().deleteTemplate(id)
 
+export const getCardsByTag = (deckId: number, tagId: number) => api().getCardsByTag(deckId, tagId)
+export const getAllDeckStats = () => api().getAllDeckStats()
+
+// Combined
+export const getCardListData = (deckId: number) => api().getCardListData(deckId)
+
+// Ordering
+export const updateDeckOrder = (ids: number[]) => api().updateDeckOrder(ids)
+export const updateFolderOrder = (ids: number[]) => api().updateFolderOrder(ids)
+export const updateCardOrder = (ids: number[]) => api().updateCardOrder(ids)
+
+// Folders
+export const getFolders = () => api().getFolders()
+export const createFolder = (name: string, parentId?: number) => api().createFolder(name, parentId)
+export const renameFolder = (id: number, name: string) => api().renameFolder(id, name)
+export const deleteFolder = (id: number) => api().deleteFolder(id)
+export const setDeckFolder = (deckId: number, folderId: number | null) => api().setDeckFolder(deckId, folderId)
+
 // Backup
 export const backupExport = () => api().backupExport()
 export const backupImport = (data: string) => api().backupImport(data)

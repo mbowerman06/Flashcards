@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef, useState } from 'react'
 import { useFabricCanvas } from '../../hooks/useFabricCanvas'
 import DrawingToolbar from './DrawingToolbar'
 import type { DrawingData } from '../../lib/card-content'
+import { useUIStore } from '../../stores/ui-store'
 
 interface Props {
   drawing: DrawingData | null
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeight }: Props) {
+  const autoSaveInterval = useUIStore((s) => s.autoSaveInterval)
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [measuredHeight, setMeasuredHeight] = useState(canvasHeight ?? 400)
@@ -39,7 +41,8 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
     undo, redo, zoomBy, getDrawingData, addImageToCanvas,
     colorPalette, updatePaletteColor,
     paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing,
-    canvasBgColor, setCanvasBgColor
+    canvasBgColor, setCanvasBgColor,
+    shapeFill, setShapeFill
   } = useFabricCanvas({ initialData: drawing, readOnly, canvasHeight: canvasHeight ?? measuredHeight })
 
   const handleImportImage = useCallback(() => {
@@ -66,9 +69,9 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
 
   useEffect(() => {
     if (readOnly) return
-    const interval = setInterval(handleSave, 1000)
+    const interval = setInterval(handleSave, autoSaveInterval)
     return () => clearInterval(interval)
-  }, [handleSave, readOnly])
+  }, [handleSave, readOnly, autoSaveInterval])
 
   // Resize canvas when measured height changes
   useEffect(() => {
@@ -86,6 +89,24 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
     if (!canvas) return
     canvas.setViewportTransform([1, 0, 0, 1, 0, 0])
     canvas.requestRenderAll()
+  }, [fabricRef])
+
+  const handleExportImage = useCallback(() => {
+    const canvas = fabricRef.current
+    if (!canvas) return
+    // Export current view as-is (with pan/zoom)
+    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 2 })
+    const link = document.createElement('a')
+    link.download = `drawing-${Date.now()}.png`
+    link.href = dataUrl
+    link.click()
+  }, [fabricRef])
+
+  const handlePrintDrawing = useCallback(() => {
+    const canvas = fabricRef.current
+    if (!canvas) return
+    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 2 })
+    window.electronAPI.saveDrawingPDF(dataUrl)
   }, [fabricRef])
 
   const toggleFullscreen = useCallback(() => {
@@ -142,6 +163,10 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
           isFullscreen={isFullscreen}
           canvasColor={canvasBgColor}
           onCanvasColorChange={setCanvasBgColor}
+          onExportImage={handleExportImage}
+          shapeFill={shapeFill}
+          onShapeFillChange={setShapeFill}
+          onPrintDrawing={handlePrintDrawing}
         />
       )}
       <div ref={containerRef} className="relative flex-1 min-h-0 overflow-hidden">

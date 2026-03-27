@@ -8,9 +8,17 @@ import type { DrawingData, PaperMode } from '../lib/card-content'
 import { useUIStore } from '../stores/ui-store'
 
 const LATEX_PATTERN = /\$\$([^$]+)\$\$|\$([^$]+)\$/
+const RAW_LATEX_PATTERN = /\\(?:frac|sqrt|sum|int|prod|lim|sin|cos|tan|log|ln|alpha|beta|gamma|delta|theta|phi|sigma|lambda|pi|infty|partial|left|right|begin|end|mathbb|cdot|times|div|pm|neq|leq|geq|angle|degree|cup|cap|subset|in|rightarrow|leftarrow)/
 
 function containsLatex(text: string): boolean {
-  return LATEX_PATTERN.test(text)
+  return LATEX_PATTERN.test(text) || RAW_LATEX_PATTERN.test(text)
+}
+
+/** If text has raw LaTeX commands but no $ delimiters, wrap it */
+function ensureLatexDelimiters(text: string): string {
+  if (LATEX_PATTERN.test(text)) return text  // already has $ delimiters
+  if (RAW_LATEX_PATTERN.test(text)) return `$$${text}$$`  // wrap raw LaTeX
+  return text
 }
 
 interface LatexRenderResult {
@@ -125,9 +133,13 @@ function createArrow(
   return new Group([line, head], { selectable: true })
 }
 
+// Track which canvas instance is active (last clicked)
+let activeCanvasId: string | null = null
+
 export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricRef = useRef<Canvas | null>(null)
+  const canvasIdRef = useRef(Math.random().toString(36).slice(2, 8))
   const theme = useUIStore.getState().theme
   const [activeTool, setActiveTool] = useState<Tool>('pen')
   const defaultBgColor = options.initialData?.canvasBgColor ?? (theme === 'dark' ? '#1a1a2e' : '#ffffff')
@@ -150,6 +162,8 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     }
     return base
   })
+  const [shapeFill, setShapeFill] = useState(false)
+  const shapeFillRef = useRef(false)
   const [canvasBgColor, setCanvasBgColor] = useState<string>(defaultBgColor)
   const uiSettings = useUIStore.getState()
   const [paperMode, setPaperMode] = useState<PaperMode>(options.initialData?.paperMode ?? uiSettings.defaultPaperMode)
@@ -163,6 +177,9 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     paperModeRef.current = paperMode
     fabricRef.current?.requestRenderAll()
   }, [paperMode])
+  useEffect(() => {
+    shapeFillRef.current = shapeFill
+  }, [shapeFill])
   useEffect(() => {
     marginRef.current = margin
     fabricRef.current?.requestRenderAll()
@@ -263,6 +280,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
     fabricRef.current = canvas
 
+    // Track which canvas is active for keyboard scoping
+    const markActive = () => { activeCanvasId = canvasIdRef.current }
+    parent.addEventListener('mousedown', markActive)
+    parent.addEventListener('focusin', markActive)
+
     if (options.readOnly) {
       canvas.selection = false
       canvas.skipTargetFind = true
@@ -316,7 +338,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       const textObj = opt.target as InstanceType<typeof IText>
       if (!textObj || !textObj.text || !containsLatex(textObj.text)) return
 
-      const origText = textObj.text
+      const origText = ensureLatexDelimiters(textObj.text)
       const origLeft = textObj.left ?? 0
       const origTop = textObj.top ?? 0
       const origColor = (textObj.fill as string) || '#000000'
@@ -580,6 +602,9 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      parent.removeEventListener('mousedown', markActive)
+      parent.removeEventListener('focusin', markActive)
+      if (activeCanvasId === canvasIdRef.current) activeCanvasId = null
       canvasEl.removeEventListener('contextmenu', handleContextMenu)
       canvasEl.removeEventListener('touchstart', handleTouchStart)
       canvasEl.removeEventListener('touchmove', handleTouchMove)
@@ -618,6 +643,9 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Only respond if this canvas instance is the active one
+      if (activeCanvasId !== canvasIdRef.current) return
+
       // Suppress all canvas shortcuts when a DOM input/textarea/contenteditable is focused
       const active = document.activeElement
       const isInInput = active && (
@@ -634,22 +662,63 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         if (e.key === 'y') { e.preventDefault(); redo(); return }
         if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomBy(1.25); return }
         if (e.key === '-') { e.preventDefault(); zoomBy(0.8); return }
+        if (e.key === 'v') {
+          // Ctrl+V: paste image from clipboard
+          navigator.clipboard.read().then(async (items) => {
+            for (const item of items) {
+              const imageType = item.types.find((t) => t.startsWith('image/'))
+              if (imageType) {
+                const blob = await item.getType(imageType)
+                const reader = new FileReader()
+                reader.onload = (ev) => {
+                  const dataUrl = ev.target?.result as string
+                  if (dataUrl) addImageToCanvas(dataUrl)
+                }
+                reader.readAsDataURL(blob)
+                return
+              }
+            }
+          }).catch(() => {})
+          return
+        }
         return
       }
 
       // All other shortcuts are suppressed during text editing on canvas
       if (isEditingText()) return
 
-      // Tool shortcuts
-      const toolMap: Record<string, Tool> = {
-        v: 'select', h: 'pan', p: 'pen', e: 'eraser',
-        r: 'rectangle', o: 'circle', a: 'arrow', t: 'text'
+      // Delete/Backspace: remove selected objects
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const activeObjs = canvas.getActiveObjects()
+        if (activeObjs.length > 0) {
+          e.preventDefault()
+          isLoadingRef.current = true  // suppress per-object undo saves
+          activeObjs.forEach((obj) => canvas.remove(obj))
+          canvas.discardActiveObject()
+          canvas.requestRenderAll()
+          isLoadingRef.current = false
+          saveUndoState()  // single undo state for the batch
+        }
+        return
       }
-      const lower = e.key.toLowerCase()
-      if (toolMap[lower]) { e.preventDefault(); setActiveTool(toolMap[lower]); return }
 
-      // Space = toggle pen/eraser
-      if (e.code === 'Space') {
+      // Tool shortcuts — read from store
+      const hk = useUIStore.getState().hotkeys
+      const lower = e.key.toLowerCase()
+      const toolActions: { action: string; tool: Tool }[] = [
+        { action: 'select', tool: 'select' }, { action: 'pan', tool: 'pan' },
+        { action: 'pen', tool: 'pen' }, { action: 'eraser', tool: 'eraser' },
+        { action: 'rectangle', tool: 'rectangle' }, { action: 'circle', tool: 'circle' },
+        { action: 'arrow', tool: 'arrow' }, { action: 'text', tool: 'text' },
+      ]
+      for (const { action, tool } of toolActions) {
+        if (hk[action] && lower === hk[action].toLowerCase()) {
+          e.preventDefault(); setActiveTool(tool); return
+        }
+      }
+
+      // Toggle pen/eraser
+      if (hk.togglePenEraser === 'Space' ? e.code === 'Space' : lower === (hk.togglePenEraser || '').toLowerCase()) {
         e.preventDefault()
         setActiveTool((prev) => prev === 'pen' ? 'eraser' : 'pen')
         return
@@ -719,6 +788,48 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       canvas.freeDrawingBrush = new PencilBrush(canvas)
       canvas.freeDrawingBrush.color = color
       canvas.freeDrawingBrush.width = strokeWidth
+
+      // Ctrl+Shift pen: replace freehand path with a 45-degree snapped straight line
+      let penStartPoint: { x: number; y: number } | null = null
+      canvas.on('path:created', (opt: any) => {
+        const path = opt.path
+        if (!path) return
+        // Check if Ctrl+Shift was held — we track it via penStartPoint
+        if (penStartPoint) {
+          const points = path.path
+          if (points && points.length >= 2) {
+            const last = points[points.length - 1]
+            let endX = last[last.length - 2] ?? last[1]
+            let endY = last[last.length - 1] ?? last[2]
+            const dx = endX - penStartPoint.x
+            const dy = endY - penStartPoint.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4)
+            endX = penStartPoint.x + Math.cos(angle) * dist
+            endY = penStartPoint.y + Math.sin(angle) * dist
+            canvas.remove(path)
+            const line = new Line([penStartPoint.x, penStartPoint.y, endX, endY], {
+              stroke: color, strokeWidth, strokeLineCap: 'round'
+            })
+            isLoadingRef.current = true
+            canvas.add(line)
+            isLoadingRef.current = false
+            saveUndoState()
+          }
+          penStartPoint = null
+        }
+      })
+
+      canvas.on('mouse:down', (opt) => {
+        const e = opt.e as MouseEvent
+        if (e.ctrlKey && e.shiftKey) {
+          const pointer = canvas.getScenePoint(opt.e)
+          penStartPoint = { x: pointer.x, y: pointer.y }
+        } else {
+          penStartPoint = null
+        }
+      })
+
       canvas.on('mouse:down', (opt) => {
         if (suppressStaleTouchDown(opt)) return
         const btn = (opt.e as MouseEvent).button
@@ -813,12 +924,12 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         if (activeTool === 'rectangle') {
           shape = new Rect({
             left: pointer.x, top: pointer.y, width: 0, height: 0,
-            fill: 'transparent', stroke: color, strokeWidth
+            fill: shapeFillRef.current ? color : 'transparent', stroke: color, strokeWidth
           })
         } else if (activeTool === 'circle') {
           shape = new Ellipse({
             left: pointer.x, top: pointer.y, rx: 0, ry: 0,
-            fill: 'transparent', stroke: color, strokeWidth
+            fill: shapeFillRef.current ? color : 'transparent', stroke: color, strokeWidth
           })
         } else {
           // Arrow: use a line while dragging, convert to arrow on mouse up
@@ -834,8 +945,27 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
       toolMouseMove = (opt: any) => {
         if (!shapeStartRef.current || !activeShapeRef.current) return
-        const pointer = canvas.getScenePoint(opt.e)
+        let pointer = canvas.getScenePoint(opt.e)
         const start = shapeStartRef.current
+        const e = opt.e as MouseEvent
+
+        // Ctrl+Shift: snap to 45-degree increments (ordinal directions)
+        if (e.ctrlKey && e.shiftKey && (activeTool === 'arrow' || activeTool === 'rectangle' || activeTool === 'circle')) {
+          const dx = pointer.x - start.x
+          const dy = pointer.y - start.y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4)
+          pointer = { x: start.x + Math.cos(angle) * dist, y: start.y + Math.sin(angle) * dist } as any
+        }
+        // Shift only: constrain to square for rect/circle
+        else if (e.shiftKey && (activeTool === 'rectangle' || activeTool === 'circle')) {
+          const size = Math.max(Math.abs(pointer.x - start.x), Math.abs(pointer.y - start.y))
+          pointer = {
+            x: start.x + size * Math.sign(pointer.x - start.x),
+            y: start.y + size * Math.sign(pointer.y - start.y)
+          } as any
+        }
+
         if (activeTool === 'rectangle') {
           (activeShapeRef.current as InstanceType<typeof Rect>).set({
             left: Math.min(start.x, pointer.x), top: Math.min(start.y, pointer.y),
@@ -958,6 +1088,47 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     }
   }, [])
 
+  // When color changes, also apply to any selected objects
+  const setColorAndApply = useCallback((newColor: string) => {
+    setColor(newColor)
+    const canvas = fabricRef.current
+    if (!canvas) return
+    const activeObjs = canvas.getActiveObjects()
+    if (activeObjs.length === 0) return
+    for (const obj of activeObjs) {
+      if (obj instanceof IText) {
+        obj.set('fill', newColor)
+      } else if (obj.type === 'group') {
+        // Arrow groups — update children
+        (obj as any)._objects?.forEach((child: any) => {
+          child.set('stroke', newColor)
+          child.set('fill', child.type === 'triangle' ? newColor : '')
+        })
+      } else {
+        obj.set('stroke', newColor)
+      }
+    }
+    canvas.requestRenderAll()
+    saveUndoState()
+  }, [saveUndoState])
+
+  // Toggle fill also applies to selected shapes
+  const setShapeFillAndApply = useCallback((fill: boolean) => {
+    setShapeFill(fill)
+    const canvas = fabricRef.current
+    if (!canvas) return
+    const activeObjs = canvas.getActiveObjects()
+    for (const obj of activeObjs) {
+      if (obj.type === 'rect' || obj.type === 'ellipse') {
+        obj.set('fill', fill ? (obj.stroke as string || color) : 'transparent')
+      }
+    }
+    if (activeObjs.length > 0) {
+      canvas.requestRenderAll()
+      saveUndoState()
+    }
+  }, [color, saveUndoState])
+
   const updatePaletteColor = useCallback((index: number, newColor: string) => {
     setColorPalette((prev) => {
       const next = [...prev]
@@ -968,10 +1139,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
   return {
     canvasRef, fabricRef, activeTool, setActiveTool,
-    color, setColor, strokeWidth, setStrokeWidth,
+    color, setColor: setColorAndApply, strokeWidth, setStrokeWidth,
     undo, redo, zoomBy, getDrawingData, addImageToCanvas,
     colorPalette, updatePaletteColor,
     paperMode, setPaperMode, margin, setMargin, gridSpacing, setGridSpacing,
-    canvasBgColor, setCanvasBgColor
+    canvasBgColor, setCanvasBgColor,
+    shapeFill, setShapeFill: setShapeFillAndApply
   }
 }

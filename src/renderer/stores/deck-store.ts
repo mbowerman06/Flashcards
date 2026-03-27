@@ -5,6 +5,7 @@ export interface Deck {
   id: number
   name: string
   description: string
+  folder_id: number | null
   created_at: string
   updated_at: string
 }

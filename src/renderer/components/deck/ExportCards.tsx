@@ -10,8 +10,8 @@ type ExportFormat = 'csv' | 'tsv' | 'quizlet' | 'anki'
 function cardsToCSV(cards: Card[], delimiter: string): string {
   const header = delimiter === '\t' ? 'front\tback' : 'front,back'
   const rows = cards.map((card) => {
-    const front = parseContent(card.front_content).markdown
-    const back = parseContent(card.back_content).markdown
+    const front = parseContent(card.front_content).plainText
+    const back = parseContent(card.back_content).plainText
     if (delimiter === ',') {
       // Escape commas and quotes in CSV
       const esc = (s: string) => {
@@ -31,8 +31,8 @@ function cardsToCSV(cards: Card[], delimiter: string): string {
 function cardsToQuizlet(cards: Card[]): string {
   // Quizlet import format: term\tdefinition per line
   return cards.map((card) => {
-    const front = parseContent(card.front_content).markdown.replace(/[\t\n]/g, ' ')
-    const back = parseContent(card.back_content).markdown.replace(/[\t\n]/g, ' ')
+    const front = parseContent(card.front_content).plainText.replace(/[\t\n]/g, ' ')
+    const back = parseContent(card.back_content).plainText.replace(/[\t\n]/g, ' ')
     return `${front}\t${back}`
   }).join('\n')
 }
@@ -41,8 +41,8 @@ function cardsToAnkiTxt(cards: Card[]): string {
   // Anki text import format: front\tback (tab-separated, one per line)
   // This can be imported into Anki via File > Import
   return cards.map((card) => {
-    const front = parseContent(card.front_content).markdown.replace(/\t/g, ' ')
-    const back = parseContent(card.back_content).markdown.replace(/\t/g, ' ')
+    const front = parseContent(card.front_content).plainText.replace(/\t/g, ' ')
+    const back = parseContent(card.back_content).plainText.replace(/\t/g, ' ')
     return `${front}\t${back}`
   }).join('\n')
 }

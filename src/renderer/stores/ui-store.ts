@@ -73,11 +73,27 @@ export const useUIStore = create<UIStore>()(
       snapToGrid: false,
       setSnapToGrid: (v) => set({ snapToGrid: v }),
       hotkeys: {
+        // Navigation
+        back: 'Escape',
+        newCard: 'Ctrl+n',
+        newDeck: 'Ctrl+Shift+n',
+        showShortcuts: 'Ctrl+/',
+        // Drawing tools
         select: 'v', pan: 'h', pen: 'p', eraser: 'e',
         rectangle: 'r', circle: 'o', arrow: 'a', text: 't',
-        togglePenEraser: 'Space', undo: 'Ctrl+z', redo: 'Ctrl+y',
+        togglePenEraser: 'Space',
+        // Drawing actions
+        undo: 'Ctrl+z', redo: 'Ctrl+y',
         zoomIn: 'Ctrl+=', zoomOut: 'Ctrl+-',
-        newCard: 'Ctrl+n', newDeck: 'Ctrl+Shift+n', back: 'Escape'
+        pasteImage: 'Ctrl+v',
+        deleteSelected: 'Delete',
+        // Text editor
+        bold: 'Ctrl+b', italic: 'Ctrl+i', underline: 'Ctrl+u',
+        checklist: 'Ctrl+l', search: 'Ctrl+f',
+        // Study
+        flipCard: 'Space',
+        rateAgain: '1', rateHard: '2', rateGood: '3', rateEasy: '4',
+        submitAnswer: 'Enter',
       } as Record<string, string>,
       setHotkey: (action, key) => set((state) => ({
         hotkeys: { ...state.hotkeys, [action]: key }

@@ -255,8 +255,8 @@ export default function ImportCards() {
 
       for (let i = 0; i < parsedCards.length; i++) {
         const card = parsedCards[i]
-        const front = serializeContent({ markdown: card.front, drawing: null })
-        const back = serializeContent({ markdown: card.back, drawing: null })
+        const front = serializeContent({ richText: null, plainText: card.front, drawing: null })
+        const back = serializeContent({ richText: null, plainText: card.back, drawing: null })
         await api.createCard(deckId, front, back)
         setImportedCount(i + 1)
       }

@@ -72,15 +72,37 @@ export function saveDb(): void {
 }
 
 function runMigrations(): void {
+  // Folders table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
   db.run(`
     CREATE TABLE IF NOT EXISTS decks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT DEFAULT '',
+      folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )
   `)
+
+  // Migration: add folder_id to decks if missing
+  try {
+    const cols = db.exec("PRAGMA table_info(decks)")
+    if (cols.length > 0) {
+      const hasFolderId = cols[0].values.some((row) => row[1] === 'folder_id')
+      if (!hasFolderId) {
+        db.run('ALTER TABLE decks ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL')
+      }
+    }
+  } catch { /* ignore */ }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS cards (
@@ -99,6 +121,11 @@ function runMigrations(): void {
 
   db.run('CREATE INDEX IF NOT EXISTS idx_cards_deck ON cards(deck_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_cards_next_review ON cards(next_review)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_cards_sort ON cards(sort_order)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_review_history_card ON review_history(card_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_card ON card_tags(card_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tags_deck ON tags(deck_id)')
 
   db.run(`
     CREATE TABLE IF NOT EXISTS review_history (
@@ -153,7 +180,21 @@ function runMigrations(): void {
         db.run('ALTER TABLE review_history ADD COLUMN time_taken_ms INTEGER DEFAULT 0')
       }
     }
-  } catch {
-    // ignore if column already exists
+  } catch { /* ignore */ }
+
+  // Migration: add sort_order columns for drag-and-drop reordering
+  const addSortOrder = (table: string) => {
+    try {
+      const cols = db.exec(`PRAGMA table_info(${table})`)
+      if (cols.length > 0) {
+        const has = cols[0].values.some((row) => row[1] === 'sort_order')
+        if (!has) {
+          db.run(`ALTER TABLE ${table} ADD COLUMN sort_order INTEGER DEFAULT 0`)
+        }
+      }
+    } catch { /* ignore */ }
   }
+  addSortOrder('decks')
+  addSortOrder('cards')
+  addSortOrder('folders')
 }

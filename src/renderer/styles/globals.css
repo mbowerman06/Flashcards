@@ -36,39 +36,53 @@
   transform: rotateY(180deg);
 }
 
-/* Markdown editor overrides */
-.w-md-editor {
-  --md-editor-font-size: 15px !important;
-}
+/* Hide sidebar scrollbar but keep scroll */
+.sidebar-nav::-webkit-scrollbar { width: 0; background: transparent; }
+.sidebar-nav { scrollbar-width: none; }
 
-/* Make md-editor fill its container */
-.md-editor-fullheight {
+/* Tiptap editor styles */
+.tiptap {
+  outline: none;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #9ca3af;
+  pointer-events: none;
+  height: 0;
+}
+.dark .tiptap p.is-editor-empty:first-child::before {
+  color: #6b7280;
+}
+.search-highlight {
+  background-color: #fef08a;
+  border-radius: 2px;
+}
+.dark .search-highlight {
+  background-color: #854d0e;
+  color: #fef08a;
+}
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.tiptap ul[data-type="taskList"] li {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
 }
-
-.md-editor-fullheight .w-md-editor {
-  flex: 1 !important;
-  height: 100% !important;
+.tiptap ul[data-type="taskList"] li > label {
+  margin-top: 0.15rem;
 }
-
-.md-editor-fullheight .w-md-editor .w-md-editor-content {
-  height: 100% !important;
+.tiptap ul[data-type="taskList"] li > div {
+  flex: 1;
 }
-
-.md-editor-fullheight .w-md-editor .w-md-editor-content .w-md-editor-input {
-  height: 100% !important;
+.tiptap div[data-columns] {
+  margin: 0.5rem 0;
 }
-
-.md-editor-fullheight .w-md-editor .w-md-editor-content .w-md-editor-input textarea,
-.md-editor-fullheight .w-md-editor .w-md-editor-content .w-md-editor-input .w-md-editor-text {
-  height: 100% !important;
-}
-
-/* Fix fullscreen editor being blocked by title bar drag region */
-.w-md-editor-fullscreen {
-  -webkit-app-region: no-drag !important;
-  z-index: 9999 !important;
+.tiptap div[data-column]:first-child {
+  border-left: none;
+  padding-left: 0;
 }
 
 /* Dark mode overrides */
@@ -125,11 +139,3 @@
   }
 }
 
-/* Let MDEditor handle its own dark mode via data-color-mode="dark" attribute */
-/* Only override the textarea to prevent our global dark input styles from interfering */
-[data-color-mode="dark"] .w-md-editor textarea,
-[data-color-mode="dark"] .w-md-editor input {
-  background-color: inherit !important;
-  color: inherit !important;
-  border-color: inherit !important;
-}

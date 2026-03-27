@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
+import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useCardStore } from '../../stores/card-store'
 import { useDeckStore } from '../../stores/deck-store'
@@ -6,6 +7,15 @@ import { useUIStore } from '../../stores/ui-store'
 import { parseContent, contentPreview } from '../../lib/card-content'
 import * as api from '../../api/ipc-client'
 import { useToastStore } from '../../stores/toast-store'
+import {
+  DndContext, DragOverlay, closestCenter, pointerWithin,
+  useSensor, useSensors, PointerSensor,
+  type DragStartEvent, type DragEndEvent, type DragOverEvent
+} from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove, defaultAnimateLayoutChanges } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { useDraggable, useDroppable } from '@dnd-kit/core'
+import { List as VirtualList } from 'react-window'
 
 interface DeckTimeStats {
   totalTimeMs: number
@@ -30,12 +40,67 @@ function formatTime(ms: number): string {
   return `${hours}h ${remMin}m`
 }
 
-type SortMode = 'newest' | 'oldest' | 'az' | 'za' | 'bestTime' | 'avgTime'
+type SortMode = 'custom' | 'newest' | 'oldest' | 'az' | 'za' | 'bestTime' | 'avgTime'
+
+function SortableCardItem({ id, isTagDragOver, children }: { id: string; isTagDragOver: boolean; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
+  const style: React.CSSProperties = isDragging
+    ? { opacity: 0, height: 0, overflow: 'hidden', margin: 0, padding: 0 }
+    : {
+        transform: CSS.Translate.toString(transform),
+        transition: transition || 'transform 150ms ease',
+        position: 'relative' as const,
+      }
+  return (
+    <div ref={setNodeRef} style={style} className={`flex items-center gap-2 transition-colors rounded-lg ${isTagDragOver ? 'ring-2 ring-blue-400 bg-blue-50' : ''}`}>
+      <div {...attributes} {...listeners} className="shrink-0 p-1.5 cursor-grab text-gray-300 hover:text-gray-500" title="Drag to reorder">
+        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>
+      </div>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function DraggableCardTag({ cardId, tagId, color }: { cardId: number; tagId: number; color: string }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `cardtag-${cardId}-${tagId}` })
+  return (
+    <span ref={setNodeRef} {...attributes} {...listeners}
+      className={`w-3 h-3 rounded-full inline-block shrink-0 cursor-grab ${isDragging ? 'opacity-30 scale-75' : 'hover:scale-125'} transition-transform`}
+      style={{ backgroundColor: color }}
+      title="Drag off to remove tag"
+    />
+  )
+}
+
+function RemoveTagZone() {
+  const { setNodeRef, isOver } = useDroppable({ id: 'remove-tag-zone' })
+  return (
+    <div ref={setNodeRef} className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] transition-all ${isOver ? 'bg-red-100 text-red-600 ring-2 ring-red-300 scale-110' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" d="M6 18L18 6M6 6l12 12" /></svg>
+      Remove
+    </div>
+  )
+}
+
+function DraggableTagWrap({ tagId, children }: { tagId: number; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `tag-${tagId}` })
+  return (
+    <span ref={setNodeRef} {...attributes} {...listeners}
+      className={`cursor-grab ${isDragging ? 'opacity-40' : ''}`}
+      title="Drag onto a card to assign this tag"
+    >
+      {children}
+    </span>
+  )
+}
 
 export default function CardList() {
   const { deckId } = useParams<{ deckId: string }>()
-  const { cards, fetchCards, removeCard, removeCards } = useCardStore()
-  const { decks } = useDeckStore()
+  const cards = useCardStore((s) => s.cards)
+  const fetchCards = useCardStore((s) => s.fetchCards)
+  const removeCard = useCardStore((s) => s.removeCard)
+  const removeCards = useCardStore((s) => s.removeCards)
+  const decks = useDeckStore((s) => s.decks)
   const {
     cardSortMode: sortMode, setCardSortMode: setSortMode,
     filterTagId, setFilterTagId,
@@ -53,6 +118,9 @@ export default function CardList() {
   const [cardTimes, setCardTimes] = useState<Record<number, { avg: number; best: number }>>({})
   const [templates, setTemplates] = useState<{ id: number; name: string; front_content: string; back_content: string }[]>([])
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  const [dragOverCardId, setDragOverCardId] = useState<number | null>(null)
+  const cardDndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
   const [saveTemplateCardId, setSaveTemplateCardId] = useState<number | null>(null)
   const [templateName, setTemplateName] = useState('')
   const deck = decks.find((d) => d.id === Number(deckId))
@@ -60,14 +128,16 @@ export default function CardList() {
 
   useEffect(() => {
     if (numericDeckId) {
-      fetchCards(numericDeckId)
-      api.getDeckTimeStats(numericDeckId).then(setTimeStats).catch(console.error)
-      api.getCardTimeStats(numericDeckId).then(setCardTimes).catch(console.error)
-      api.getTagsByDeck(numericDeckId).then(setTags).catch(console.error)
-      api.getCardTagsForDeck(numericDeckId).then(setCardTagMap).catch(console.error)
-      api.getTemplates().then(setTemplates).catch(console.error)
+      api.getCardListData(numericDeckId).then((data) => {
+        useCardStore.setState({ cards: data.cards })
+        setTimeStats(data.timeStats)
+        setCardTimes(data.cardTimes)
+        setTags(data.tags)
+        setCardTagMap(data.cardTagMap)
+        setTemplates(data.templates)
+      }).catch(console.error)
     }
-  }, [numericDeckId, fetchCards])
+  }, [numericDeckId])
 
   const regexValid = useMemo(() => {
     if (!searchQuery) return true
@@ -91,7 +161,7 @@ export default function CardList() {
       result = result.filter((card) => {
         const front = parseContent(card.front_content)
         const back = parseContent(card.back_content)
-        const text = `${front.markdown} ${back.markdown}`
+        const text = `${front.plainText} ${back.plainText}`
         if (regexValid) {
           const regex = new RegExp(searchQuery, 'i')
           return regex.test(text)
@@ -101,6 +171,8 @@ export default function CardList() {
     }
 
     switch (sortMode) {
+      case 'custom':
+        break
       case 'newest':
         result.sort((a, b) => b.created_at.localeCompare(a.created_at))
         break
@@ -109,15 +181,15 @@ export default function CardList() {
         break
       case 'az':
         result.sort((a, b) => {
-          const aText = parseContent(a.front_content).markdown.toLowerCase()
-          const bText = parseContent(b.front_content).markdown.toLowerCase()
+          const aText = parseContent(a.front_content).plainText.toLowerCase()
+          const bText = parseContent(b.front_content).plainText.toLowerCase()
           return aText.localeCompare(bText)
         })
         break
       case 'za':
         result.sort((a, b) => {
-          const aText = parseContent(a.front_content).markdown.toLowerCase()
-          const bText = parseContent(b.front_content).markdown.toLowerCase()
+          const aText = parseContent(a.front_content).plainText.toLowerCase()
+          const bText = parseContent(b.front_content).plainText.toLowerCase()
           return bText.localeCompare(aText)
         })
         break
@@ -148,6 +220,78 @@ export default function CardList() {
 
   const toast = useToastStore()
 
+  // Card DnD
+  const cardIds = useMemo(() => filteredCards.map((c) => `card-${c.id}`), [filteredCards])
+
+  const handleCardDragStart = (event: DragStartEvent) => setActiveDragId(String(event.active.id))
+
+  const handleCardDragOver = (event: DragOverEvent) => {
+    const activeId = String(event.active.id)
+    const overId = event.over?.id ? String(event.over.id) : null
+    // Only highlight cards when dragging a tag
+    if (activeId.startsWith('tag-') && overId?.startsWith('card-')) {
+      setDragOverCardId(Number(overId.replace('card-', '')))
+    } else {
+      setDragOverCardId(null)
+    }
+  }
+
+  const handleCardDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event
+    setActiveDragId(null)
+    setDragOverCardId(null)
+    if (!over) return
+
+    const activeId = String(active.id)
+    const overId = String(over.id)
+
+    // Card tag circle dragged to remove zone (or dropped anywhere that's not its card)
+    if (activeId.startsWith('cardtag-')) {
+      const parts = activeId.split('-')
+      const cardId = Number(parts[1])
+      const tagId = Number(parts[2])
+      // Remove tag from card
+      const currentTags = cardTagMap[cardId] || []
+      const newTags = currentTags.filter((id) => id !== tagId)
+      await api.setCardTags(cardId, newTags)
+      api.getCardTagsForDeck(numericDeckId).then(setCardTagMap)
+      return
+    }
+
+    // Tag dropped on card
+    if (activeId.startsWith('tag-') && overId.startsWith('card-')) {
+      const tagId = Number(activeId.replace('tag-', ''))
+      const cardId = Number(overId.replace('card-', ''))
+      await api.addTagToCards(tagId, [cardId])
+      api.getCardTagsForDeck(numericDeckId).then(setCardTagMap)
+      return
+    }
+
+    // Card reorder
+    if (activeId.startsWith('card-') && overId.startsWith('card-') && activeId !== overId) {
+      const oldIndex = cardIds.indexOf(activeId)
+      const newIndex = cardIds.indexOf(overId)
+      if (oldIndex !== -1 && newIndex !== -1) {
+        // flushSync forces React to re-render synchronously BEFORE dnd-kit removes the transform
+        // This means the card is already in its new DOM position when the transform disappears — no gap
+        const { cards: currentCards } = useCardStore.getState()
+        const reordered = arrayMove(currentCards, currentCards.findIndex(c => c.id === filteredCards[oldIndex].id), currentCards.findIndex(c => c.id === filteredCards[newIndex].id))
+        flushSync(() => {
+          setSortMode('custom' as SortMode)
+          useCardStore.setState({ cards: reordered })
+        })
+        api.updateCardOrder(reordered.map((c) => c.id))
+      }
+    }
+  }
+
+  const activeDragCard = activeDragId?.startsWith('card-')
+    ? cards.find((c) => c.id === Number(activeDragId.replace('card-', '')))
+    : null
+  const activeDragTag = activeDragId?.startsWith('tag-')
+    ? tags.find((t) => t.id === Number(activeDragId.replace('tag-', '')))
+    : null
+
   const handleDelete = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
     const card = cards.find((c) => c.id === id)
@@ -163,7 +307,7 @@ export default function CardList() {
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
-      {/* Header row: title + inline stats + dual buttons */}
+      {/* Header row: title + stats + buttons */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <div>
@@ -171,44 +315,35 @@ export default function CardList() {
             <p className="text-sm text-gray-500">{cards.length} cards</p>
           </div>
 
-          {/* Inline stats with graph icon link */}
-          {timeStats && timeStats.totalReviews > 0 && (
-            <div className="flex items-center gap-3 ml-2">
-              <button
-                onClick={() => navigate(`/deck/${deckId}/stats`)}
-                className="text-gray-400 hover:text-indigo-600 transition-colors"
-                title="View full statistics"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 3v18h18M7 16v-3m4 3v-6m4 6V8m4 8V5" />
-                </svg>
-              </button>
-              <button
-                onClick={() => navigate(`/deck/${deckId}/print`)}
-                className="text-gray-400 hover:text-indigo-600 transition-colors"
-                title="Print cards"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z" />
-                </svg>
-              </button>
+          {/* Stats icon + inline stats */}
+          <div className="flex items-center gap-3 ml-2">
+            <button
+              onClick={() => navigate(`/deck/${deckId}/stats`)}
+              className="text-gray-400 hover:text-indigo-600 transition-colors"
+              title="View full statistics"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3v18h18M7 16v-3m4 3v-6m4 6V8m4 8V5" />
+              </svg>
+            </button>
+            {timeStats && timeStats.totalReviews > 0 && (
               <div className="flex gap-3 text-xs text-gray-500">
                 <span title="Total study time"><span className="text-blue-500 font-medium">{formatTime(timeStats.totalTimeMs)}</span> total</span>
                 <span title="Average per card"><span className="text-green-500 font-medium">{formatTime(timeStats.avgTimePerCardMs)}</span> avg</span>
                 <span title="Fastest card"><span className="text-purple-500 font-medium">{formatTime(timeStats.fastestCardMs)}</span> fast</span>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        {/* Dual split buttons */}
+        {/* Action buttons */}
         <div className="flex gap-2">
           {/* Study: Learn | Browse */}
           <div className="flex rounded-lg overflow-hidden">
             <button
               onClick={() => navigate(`/deck/${deckId}/study`)}
               disabled={cards.length === 0}
-              className="px-4 py-2 bg-green-600 text-white hover:bg-green-700 font-medium text-sm disabled:opacity-40"
+              className="px-4 py-2 bg-green-500 text-white hover:bg-green-600 font-medium text-sm disabled:opacity-40"
             >
               Learn
             </button>
@@ -218,7 +353,7 @@ export default function CardList() {
                 navigate(`/deck/${deckId}/browse?cards=${ids}`)
               }}
               disabled={filteredCards.length === 0}
-              className="px-2.5 py-2 bg-green-700 text-green-200 hover:bg-green-800 text-xs border-l border-green-500 disabled:opacity-40"
+              className="px-2.5 py-2 bg-green-600 text-white hover:bg-green-700 text-xs border-l border-green-400 disabled:opacity-40"
               title="Browse cards"
             >
               Browse
@@ -233,7 +368,7 @@ export default function CardList() {
                 navigate(`/deck/${deckId}/test?cards=${ids}`)
               }}
               disabled={filteredCards.length === 0}
-              className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 font-medium text-sm disabled:opacity-40"
+              className="px-4 py-2 bg-red-500 text-white hover:bg-red-600 font-medium text-sm disabled:opacity-40"
             >
               Test
             </button>
@@ -243,78 +378,73 @@ export default function CardList() {
                 navigate(`/deck/${deckId}/match?cards=${ids}`)
               }}
               disabled={filteredCards.length < 2}
-              className="px-2.5 py-2 bg-red-700 text-red-200 hover:bg-red-800 text-xs border-l border-red-500 disabled:opacity-40"
+              className="px-2.5 py-2 bg-red-600 text-white hover:bg-red-700 text-xs border-l border-red-400 disabled:opacity-40"
               title="Matching game"
             >
               Match
             </button>
           </div>
 
-          {/* Add: Card | Bulk */}
-          <div className="flex rounded-lg overflow-hidden">
+          {/* Add | Bulk | Template */}
+          <div className="relative flex rounded-lg overflow-visible">
             <button
               onClick={() => navigate(`/deck/${deckId}/card/new`)}
-              className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 font-medium text-sm"
+              className="px-4 py-2 bg-blue-500 text-white hover:bg-blue-600 font-medium text-sm rounded-l-lg"
             >
               + Add
             </button>
             <button
               onClick={() => navigate(`/deck/${deckId}/card/bulk`)}
-              className="px-2.5 py-2 bg-blue-700 text-blue-200 hover:bg-blue-800 text-xs border-l border-blue-500"
+              className="px-2.5 py-2 bg-blue-600 text-white hover:bg-blue-700 text-xs border-l border-blue-400"
               title="Bulk add cards"
             >
               Bulk
             </button>
-          </div>
-
-          {/* From Template */}
-          <div className="relative">
             <button
               onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
-              className="px-3 py-2 bg-purple-600 text-white hover:bg-purple-700 font-medium text-sm rounded-lg"
+              className="px-2.5 py-2 bg-blue-700 text-blue-100 hover:bg-blue-800 text-xs border-l border-blue-500 rounded-r-lg"
               title="Create card from template"
             >
               Template
             </button>
             {showTemplateDropdown && (
-              <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+              <div className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20">
                 {templates.length === 0 ? (
                   <div className="px-4 py-3 text-sm text-gray-400">No templates yet. Save a card as template first.</div>
                 ) : (
-                  <>
-                    {templates.map((tmpl) => (
-                      <div key={tmpl.id} className="flex items-center justify-between px-3 py-2 hover:bg-gray-50 group">
-                        <button
-                          onClick={async () => {
-                            const newCard = await api.createCard(numericDeckId, tmpl.front_content, tmpl.back_content)
-                            setShowTemplateDropdown(false)
-                            navigate(`/deck/${deckId}/card/${newCard.id}`)
-                          }}
-                          className="flex-1 text-left text-sm text-gray-700 truncate"
-                          title={tmpl.name}
-                        >
-                          {tmpl.name}
-                        </button>
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation()
-                            await api.deleteTemplate(tmpl.id)
-                            setTemplates((prev) => prev.filter((t) => t.id !== tmpl.id))
-                          }}
-                          className="ml-2 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="Delete template"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    ))}
-                  </>
+                  templates.map((tmpl) => (
+                    <div key={tmpl.id} className="flex items-center justify-between px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 group">
+                      <button
+                        onClick={async () => {
+                          const newCard = await api.createCard(numericDeckId, tmpl.front_content, tmpl.back_content)
+                          setShowTemplateDropdown(false)
+                          navigate(`/deck/${deckId}/card/${newCard.id}`)
+                        }}
+                        className="flex-1 text-left text-sm text-gray-700 dark:text-gray-200 truncate"
+                        title={tmpl.name}
+                      >
+                        {tmpl.name}
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          await api.deleteTemplate(tmpl.id)
+                          setTemplates((prev) => prev.filter((t) => t.id !== tmpl.id))
+                        }}
+                        className="ml-2 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete template"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))
                 )}
               </div>
             )}
           </div>
+
         </div>
       </div>
 
@@ -340,6 +470,7 @@ export default function CardList() {
             onChange={(e) => setSortMode(e.target.value as SortMode)}
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
+            <option value="custom">Custom (drag)</option>
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
             <option value="az">A - Z</option>
@@ -349,6 +480,8 @@ export default function CardList() {
           </select>
         </div>
       )}
+
+      <DndContext sensors={cardDndSensors} collisionDetection={pointerWithin} onDragStart={handleCardDragStart} onDragOver={handleCardDragOver} onDragEnd={handleCardDragEnd}>
 
       {/* Tags bar */}
       {cards.length > 0 && (
@@ -363,7 +496,8 @@ export default function CardList() {
             All
           </button>
           {tags.map((tag) => (
-            <span key={tag.id} className="inline-flex items-center gap-0.5">
+            <DraggableTagWrap key={tag.id} tagId={tag.id}>
+            <span className="inline-flex items-center gap-0.5">
               <button
                 onClick={() => setFilterTagId(filterTagId === tag.id ? null : tag.id)}
                 className={`px-2 py-0.5 text-xs rounded-l-full transition-colors border ${
@@ -394,6 +528,7 @@ export default function CardList() {
                 &times;
               </button>
             </span>
+            </DraggableTagWrap>
           ))}
           <form
             className="flex items-center gap-1"
@@ -413,6 +548,7 @@ export default function CardList() {
               className="px-2 py-0.5 text-xs border border-gray-300 rounded-full w-20 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </form>
+          {activeDragId?.startsWith('cardtag-') && <RemoveTagZone />}
         </div>
       )}
 
@@ -534,15 +670,44 @@ export default function CardList() {
           )}
         </div>
       ) : (
+        <SortableContext items={cardIds} strategy={verticalListSortingStrategy}>
+        {filteredCards.length > 50 && !activeDragId ? (
+          <VirtualList
+            height={Math.min(filteredCards.length * 64, 600)}
+            itemCount={filteredCards.length}
+            itemSize={64}
+            width="100%"
+            itemData={filteredCards}
+          >
+            {({ index, style: rowStyle }) => {
+              const card = filteredCards[index]
+              const front = parseContent(card.front_content)
+              const back = parseContent(card.back_content)
+              return (
+                <div style={rowStyle} key={card.id}>
+                  <div
+                    onClick={() => navigate(`/deck/${deckId}/card/${card.id}`)}
+                    className="flex items-center justify-between p-3 mx-1 mb-1 bg-white border border-gray-200 rounded-lg hover:shadow-sm cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div className="text-sm truncate flex-1"><span className="text-gray-400 text-xs mr-1">F</span>{contentPreview(front)}</div>
+                      <div className="text-sm truncate flex-1"><span className="text-gray-400 text-xs mr-1">B</span>{contentPreview(back)}</div>
+                    </div>
+                  </div>
+                </div>
+              )
+            }}
+          </VirtualList>
+        ) : (
         <div className="space-y-2">
           {filteredCards.map((card) => {
             const front = parseContent(card.front_content)
             const back = parseContent(card.back_content)
             return (
+              <SortableCardItem key={card.id} id={`card-${card.id}`} isTagDragOver={dragOverCardId === card.id}>
               <div
-                key={card.id}
                 onClick={() => navigate(`/deck/${deckId}/card/${card.id}`)}
-                className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-lg hover:shadow-sm transition-shadow cursor-pointer"
+                className="flex-1 flex items-center justify-between p-4 bg-white border border-gray-200 rounded-lg hover:shadow-sm transition-shadow cursor-pointer"
               >
                 <div className="flex items-center gap-3 mr-3" onClick={(e) => e.stopPropagation()}>
                   <input
@@ -575,11 +740,7 @@ export default function CardList() {
                       const tag = tags.find((t) => t.id === tagId)
                       if (!tag) return null
                       return (
-                        <span
-                          key={tagId}
-                          className="w-3 h-3 rounded-full inline-block shrink-0"
-                          style={{ backgroundColor: tag.color }}
-                        />
+                        <DraggableCardTag key={tagId} cardId={card.id} tagId={tagId} color={tag.color} />
                       )
                     })}
                     {(cardTagMap[card.id]?.length || 0) > 4 && (
@@ -687,10 +848,33 @@ export default function CardList() {
                   )}
                 </div>
               </div>
+              </SortableCardItem>
             )
           })}
         </div>
+        )}
+        </SortableContext>
       )}
+      <DragOverlay dropAnimation={null}>
+        {activeDragCard && (
+          <div className="flex items-center p-4 bg-white dark:bg-gray-800 border-2 border-blue-400 rounded-lg shadow-xl opacity-80 max-w-2xl">
+            <span className="text-sm truncate">{contentPreview(parseContent(activeDragCard.front_content))}</span>
+          </div>
+        )}
+        {activeDragTag && (
+          <span className="px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: activeDragTag.color, color: '#fff' }}>
+            {activeDragTag.name}
+          </span>
+        )}
+        {activeDragId?.startsWith('cardtag-') && (() => {
+          const tagId = Number(activeDragId.split('-')[2])
+          const tag = tags.find((t) => t.id === tagId)
+          return tag ? (
+            <span className="w-5 h-5 rounded-full inline-block shadow-lg ring-2 ring-red-400" style={{ backgroundColor: tag.color }} />
+          ) : null
+        })()}
+      </DragOverlay>
+      </DndContext>
     </div>
   )
 }

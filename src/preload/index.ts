@@ -50,8 +50,27 @@ const api = {
   createTemplate: (name: string, front: string, back: string) => ipcRenderer.invoke('template:create', name, front, back),
   deleteTemplate: (id: number) => ipcRenderer.invoke('template:delete', id),
 
+  getCardsByTag: (deckId: number, tagId: number) => ipcRenderer.invoke('card:getByTag', deckId, tagId),
+  getAllDeckStats: () => ipcRenderer.invoke('deck:allStats'),
+
+  // Combined
+  getCardListData: (deckId: number) => ipcRenderer.invoke('deck:getCardListData', deckId),
+
+  // Ordering
+  updateDeckOrder: (ids: number[]) => ipcRenderer.invoke('deck:updateOrder', ids),
+  updateFolderOrder: (ids: number[]) => ipcRenderer.invoke('folder:updateOrder', ids),
+  updateCardOrder: (ids: number[]) => ipcRenderer.invoke('card:updateOrder', ids),
+
+  // Folders
+  getFolders: () => ipcRenderer.invoke('folder:getAll'),
+  createFolder: (name: string, parentId?: number) => ipcRenderer.invoke('folder:create', name, parentId),
+  renameFolder: (id: number, name: string) => ipcRenderer.invoke('folder:rename', id, name),
+  deleteFolder: (id: number) => ipcRenderer.invoke('folder:delete', id),
+  setDeckFolder: (deckId: number, folderId: number | null) => ipcRenderer.invoke('deck:setFolder', deckId, folderId),
+
   // Utility
   fetchUrl: (url: string) => ipcRenderer.invoke('util:fetchUrl', url),
+  saveDrawingPDF: (imageDataUrl: string) => ipcRenderer.invoke('util:saveDrawingPDF', imageDataUrl),
 
   // Backup
   backupExport: () => ipcRenderer.invoke('backup:export'),

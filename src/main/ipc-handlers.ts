@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, dialog } from 'electron'
+import { writeFileSync } from 'fs'
 import * as deckRepo from './repositories/deck-repository'
 import * as cardRepo from './repositories/card-repository'
 import * as reviewRepo from './repositories/review-repository'
@@ -174,14 +175,88 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('backup:import', async (_: any, data: string) => {
-    const { writeFileSync } = require('fs')
+    const { writeFileSync, copyFileSync, existsSync, unlinkSync } = require('fs')
     const { join } = require('path')
     const { app } = require('electron')
     const dbPath = join(app.getPath('userData'), 'flashcards.db')
+    const backupPath = dbPath + '.backup'
     const buffer = Buffer.from(data, 'base64')
-    writeFileSync(dbPath, buffer)
-    app.relaunch()
-    app.exit(0)
+
+    // Basic validation: SQLite files start with "SQLite format 3\0"
+    const header = buffer.slice(0, 16).toString('ascii')
+    if (!header.startsWith('SQLite format 3')) {
+      throw new Error('Invalid database file. Not a valid SQLite database.')
+    }
+
+    // Backup current DB before overwriting
+    try {
+      if (existsSync(dbPath)) {
+        copyFileSync(dbPath, backupPath)
+      }
+    } catch (e) {
+      console.error('Failed to create backup:', e)
+    }
+
+    try {
+      writeFileSync(dbPath, buffer)
+      app.relaunch()
+      app.exit(0)
+    } catch (e) {
+      // Restore backup on failure
+      try {
+        if (existsSync(backupPath)) {
+          copyFileSync(backupPath, dbPath)
+        }
+      } catch {}
+      throw new Error('Failed to import database. Previous data has been restored.')
+    }
+  })
+
+  ipcMain.handle('card:getByTag', (_, deckId: number, tagId: number) => cardRepo.getCardsByTag(deckId, tagId))
+
+  ipcMain.handle('deck:allStats', () => deckRepo.getAllDeckStats())
+
+  // Combined deck data (reduces 6 IPC calls to 1)
+  ipcMain.handle('deck:getCardListData', (_, deckId: number) => {
+    return {
+      cards: cardRepo.getCardsByDeck(deckId),
+      timeStats: reviewRepo.getDeckTimeStats(deckId),
+      cardTimes: reviewRepo.getCardTimeStats(deckId),
+      tags: tagRepo.getTagsByDeck(deckId),
+      cardTagMap: tagRepo.getCardTagsForDeck(deckId),
+      templates: templateRepo.getAllTemplates()
+    }
+  })
+
+  // Ordering
+  ipcMain.handle('deck:updateOrder', (_, ids: number[]) => deckRepo.updateDeckOrder(ids))
+  ipcMain.handle('folder:updateOrder', (_, ids: number[]) => deckRepo.updateFolderOrder(ids))
+  ipcMain.handle('card:updateOrder', (_, ids: number[]) => cardRepo.updateCardOrder(ids))
+
+  // Folders
+  ipcMain.handle('folder:getAll', () => deckRepo.getAllFolders())
+  ipcMain.handle('folder:create', (_, name: string, parentId?: number) => deckRepo.createFolder(name, parentId ?? null))
+  ipcMain.handle('folder:rename', (_, id: number, name: string) => deckRepo.renameFolder(id, name))
+  ipcMain.handle('folder:delete', (_, id: number) => deckRepo.deleteFolder(id))
+  ipcMain.handle('deck:setFolder', (_, deckId: number, folderId: number | null) => deckRepo.setDeckFolder(deckId, folderId))
+
+  // Save drawing as PDF
+  ipcMain.handle('util:saveDrawingPDF', async (event, imageDataUrl: string) => {
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showSaveDialog(parent!, {
+      title: 'Save Drawing as PDF',
+      defaultPath: `drawing-${Date.now()}.pdf`,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }]
+    })
+    if (result.canceled || !result.filePath) return false
+    // Create a hidden window, load the image, print to PDF
+    const win = new BrowserWindow({ show: false, width: 800, height: 600 })
+    const html = `<!DOCTYPE html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff}img{max-width:100%;max-height:100vh;object-fit:contain}</style></head><body><img src="${imageDataUrl}" /></body></html>`
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    const pdfData = await win.webContents.printToPDF({ printBackground: true })
+    writeFileSync(result.filePath, pdfData)
+    win.destroy()
+    return true
   })
 
   // Window controls

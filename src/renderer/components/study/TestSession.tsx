@@ -5,11 +5,9 @@ import type { Card } from '../../stores/card-store'
 import * as api from '../../api/ipc-client'
 import {
   parseContent, detectQuestionType, extractBlanks, frontWithBlanks,
-  getMultiAnswers, answerMatches, QuestionType
+  getMultiAnswers, answerMatches, getPlainText, QuestionType
 } from '../../lib/card-content'
-import MDEditor from '@uiw/react-md-editor'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
+import RichTextViewer from '../card/RichTextViewer'
 
 interface TestQuestion {
   card: Card
@@ -33,31 +31,33 @@ function buildQuestions(cards: Card[]): TestQuestion[] {
     const back = parseContent(card.back_content)
     const type = detectQuestionType(front, back)
 
+    const frontText = getPlainText(front)
+    const backText = getPlainText(back)
+
     if (type === 'fill-in-blank') {
-      const blanks = extractBlanks(front.markdown)
+      const blanks = extractBlanks(frontText)
       return {
         card,
         type,
-        prompt: frontWithBlanks(front.markdown),
+        prompt: frontWithBlanks(frontText),
         expectedAnswers: blanks,
         pointsTotal: blanks.length
       }
     } else if (type === 'multi-answer') {
-      const answers = getMultiAnswers(back.markdown)
+      const answers = getMultiAnswers(backText)
       return {
         card,
         type,
-        prompt: front.markdown,
+        prompt: frontText,
         expectedAnswers: answers,
         pointsTotal: answers.length
       }
     } else {
-      // definition
       return {
         card,
         type,
-        prompt: front.markdown,
-        expectedAnswers: [back.markdown.trim()],
+        prompt: frontText,
+        expectedAnswers: [backText.trim()],
         pointsTotal: 1
       }
     }
@@ -206,6 +206,21 @@ export default function TestSession() {
     }
   }, [submitted, handleNext, handleSubmitAnswer, answers.length])
 
+  // Global Enter key for submit/next
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        const tag = (document.activeElement as HTMLElement)?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return // let input handler deal with it
+        e.preventDefault()
+        if (submitted) handleNext()
+        else handleSubmitAnswer()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [submitted, handleNext, handleSubmitAnswer])
+
   // Auto-focus first input
   useEffect(() => {
     if (!loading && questions.length > 0) {
@@ -332,12 +347,8 @@ export default function TestSession() {
               {currentQ.type === 'fill-in-blank' ? 'Fill in the blank' :
                currentQ.type === 'multi-answer' ? 'Multi-answer' : 'Question'}
             </div>
-            <div data-color-mode="light">
-              <MDEditor.Markdown
-                source={currentQ.prompt}
-                remarkPlugins={[remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-              />
+            <div className="text-base">
+              {currentQ.prompt}
             </div>
             {currentQ.type === 'multi-answer' && !submitted && (
               <div className="mt-2 text-sm text-gray-400">

@@ -1,9 +1,7 @@
 import { useCallback } from 'react'
 import { parseContent } from '../../lib/card-content'
 import type { Card } from '../../stores/card-store'
-import MDEditor from '@uiw/react-md-editor'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
+import RichTextViewer from '../card/RichTextViewer'
 import DrawingCanvas from '../card/DrawingCanvas'
 
 interface Props {
@@ -17,19 +15,10 @@ export default function StudyCard({ card, flipped, onFlip }: Props) {
   const back = parseContent(card.back_content)
   const content = flipped ? back : front
 
-  // Prevent markdown links from navigating (which causes white screen)
-  const handleLinkClick = useCallback((e: React.MouseEvent) => {
-    const target = e.target as HTMLElement
-    if (target.tagName === 'A') {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-  }, [])
-
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl shadow-sm min-h-[300px] overflow-hidden">
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm min-h-[300px] overflow-hidden">
       <div
-        className="flex items-center justify-between px-3 py-1.5 bg-gray-50 border-b border-gray-200 cursor-pointer"
+        className="flex items-center justify-between px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600 cursor-pointer"
         onClick={onFlip}
       >
         <span className="text-xs font-medium text-gray-400 uppercase">
@@ -40,14 +29,10 @@ export default function StudyCard({ card, flipped, onFlip }: Props) {
         </span>
       </div>
 
-      <div className="p-6" onClick={handleLinkClick}>
-        {content.markdown && (
-          <div data-color-mode="light" className="mb-4">
-            <MDEditor.Markdown
-              source={content.markdown}
-              remarkPlugins={[remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-            />
+      <div className="p-6">
+        {(content.richText || content.plainText) && (
+          <div className="mb-4">
+            <RichTextViewer content={content.richText} plainText={content.plainText} />
           </div>
         )}
 
@@ -60,7 +45,7 @@ export default function StudyCard({ card, flipped, onFlip }: Props) {
           />
         )}
 
-        {!content.markdown && (!content.drawing || content.drawing.objects?.length === 0) && (
+        {!content.richText && !content.plainText && (!content.drawing || content.drawing.objects?.length === 0) && (
           <p className="text-gray-400 italic">(empty)</p>
         )}
       </div>

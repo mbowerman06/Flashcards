@@ -312,7 +312,7 @@ export default function DeckStatsPage() {
                   <tbody>
                     {cards.map((card) => {
                       const front = parseContent(card.front_content)
-                      const preview = front.markdown.replace(/[#*_~`>\-\[\]()!]/g, '').trim()
+                      const preview = front.plainText.trim()
                       const displayPreview = preview.length > 40 ? preview.substring(0, 40) + '...' : preview || '(empty)'
                       const maturity = getCardMaturityColor(card.repetition, card.interval)
                       const barColor = getMaturityBarColor(card.repetition, card.interval)

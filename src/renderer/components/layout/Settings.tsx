@@ -2,14 +2,7 @@ import { useState, useRef } from 'react'
 import { useUIStore } from '../../stores/ui-store'
 import * as api from '../../api/ipc-client'
 import type { PaperMode } from '../../lib/card-content'
-
-const hotkeyLabels: Record<string, string> = {
-  select: 'Select tool', pan: 'Pan tool', pen: 'Pen tool', eraser: 'Eraser tool',
-  rectangle: 'Rectangle tool', circle: 'Circle tool', arrow: 'Arrow tool', text: 'Text tool',
-  togglePenEraser: 'Toggle pen/eraser', undo: 'Undo', redo: 'Redo',
-  zoomIn: 'Zoom in', zoomOut: 'Zoom out',
-  newCard: 'New card', newDeck: 'New deck', back: 'Back to decks'
-}
+import { shortcutCategories } from '../../lib/keybindings'
 
 export default function Settings() {
   const store = useUIStore()
@@ -123,18 +116,24 @@ export default function Settings() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <span className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Decks</span>
-              <div className="flex gap-2">
-                <button onClick={() => store.setDefaultDeckSort('newest')} className={store.defaultDeckSort === 'newest' ? btnA : btnI}>Newest</button>
-                <button onClick={() => store.setDefaultDeckSort('az')} className={store.defaultDeckSort === 'az' ? btnA : btnI}>A-Z</button>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { v: 'custom', l: 'Custom' }, { v: 'newest', l: 'Newest' }, { v: 'oldest', l: 'Oldest' },
+                  { v: 'az', l: 'A-Z' }, { v: 'za', l: 'Z-A' }
+                ] as const).map(({ v, l }) => (
+                  <button key={v} onClick={() => store.setDefaultDeckSort(v as any)}
+                    className={store.defaultDeckSort === v ? btnA : btnI}>
+                    {l}
+                  </button>
+                ))}
               </div>
             </div>
             <div>
               <span className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Cards</span>
-              <div className="flex gap-2 flex-wrap">
+              <div className="grid grid-cols-3 gap-2">
                 {([
-                  { v: 'newest', l: 'Newest' }, { v: 'oldest', l: 'Oldest' },
-                  { v: 'az', l: 'A-Z' }, { v: 'za', l: 'Z-A' },
-                  { v: 'bestTime', l: 'Best' }, { v: 'avgTime', l: 'Avg' }
+                  { v: 'custom', l: 'Custom' }, { v: 'newest', l: 'Newest' }, { v: 'oldest', l: 'Oldest' },
+                  { v: 'az', l: 'A-Z' }, { v: 'za', l: 'Z-A' }, { v: 'bestTime', l: 'Best' }, { v: 'avgTime', l: 'Avg' }
                 ] as const).map(({ v, l }) => (
                   <button key={v} onClick={() => store.setDefaultCardSort(v as any)}
                     className={store.defaultCardSort === v ? btnA : btnI}>
@@ -208,24 +207,58 @@ export default function Settings() {
         {/* Editable keyboard shortcuts */}
         <div>
           <label className={label}>Keyboard Shortcuts</label>
-          <p className={desc} style={{ marginTop: 0, marginBottom: 8 }}>Click a shortcut to rebind it. Press Escape to cancel.</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-            {Object.entries(hotkeyLabels).map(([action, actionLabel]) => (
-              <div key={action} className="flex items-center justify-between py-1">
-                <span className="text-xs text-gray-600 dark:text-gray-400">{actionLabel}</span>
-                <button
-                  onClick={() => handleHotkeyCapture(action)}
-                  className={`px-2 py-0.5 rounded text-[11px] font-mono min-w-[60px] text-center transition-colors ${
-                    editingHotkey === action
-                      ? 'bg-blue-600 text-white animate-pulse'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
-                  }`}
-                >
-                  {editingHotkey === action ? 'Press a key...' : store.hotkeys[action] || '—'}
-                </button>
+          <p className={desc} style={{ marginTop: 0, marginBottom: 12 }}>Click any shortcut to rebind it. Press Escape to cancel.</p>
+          <div className="space-y-4">
+            {shortcutCategories.map((cat) => (
+              <div key={cat.label}>
+                <div className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{cat.label}</div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-0.5">
+                  {cat.shortcuts.map(({ action, label: actionLabel }) => (
+                    <div key={action} className="flex items-center justify-between py-1 border-b border-gray-100 dark:border-gray-800">
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{actionLabel}</span>
+                      <button
+                        onClick={() => handleHotkeyCapture(action)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono min-w-[70px] text-center transition-colors ${
+                          editingHotkey === action
+                            ? 'bg-blue-600 text-white animate-pulse'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                        {editingHotkey === action ? 'Press a key...' : store.hotkeys[action] || '—'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
+          <button
+            onClick={() => {
+              const defaults = useUIStore.getState()
+              // Reset all to defaults by clearing persisted hotkeys
+              const fresh: Record<string, string> = {}
+              for (const cat of shortcutCategories) {
+                for (const s of cat.shortcuts) {
+                  fresh[s.action] = useUIStore.getState().hotkeys[s.action]
+                }
+              }
+              // Reset to original defaults
+              useUIStore.setState({
+                hotkeys: {
+                  back: 'Escape', newCard: 'Ctrl+n', newDeck: 'Ctrl+Shift+n', showShortcuts: 'Ctrl+/',
+                  select: 'v', pan: 'h', pen: 'p', eraser: 'e',
+                  rectangle: 'r', circle: 'o', arrow: 'a', text: 't',
+                  togglePenEraser: 'Space', undo: 'Ctrl+z', redo: 'Ctrl+y',
+                  zoomIn: 'Ctrl+=', zoomOut: 'Ctrl+-', pasteImage: 'Ctrl+v', deleteSelected: 'Delete',
+                  bold: 'Ctrl+b', italic: 'Ctrl+i', underline: 'Ctrl+u', checklist: 'Ctrl+l', search: 'Ctrl+f',
+                  flipCard: 'Space', rateAgain: '1', rateHard: '2', rateGood: '3', rateEasy: '4', submitAnswer: 'Enter',
+                }
+              })
+            }}
+            className="mt-3 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            Reset all to defaults
+          </button>
         </div>
       </div>
     </div>

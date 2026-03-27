@@ -27,6 +27,10 @@ interface Props {
   isFullscreen?: boolean
   canvasColor?: string
   onCanvasColorChange?: (color: string) => void
+  onExportImage?: () => void
+  onPrintDrawing?: () => void
+  shapeFill?: boolean
+  onShapeFillChange?: (fill: boolean) => void
 }
 
 // SVG icons — tldraw-inspired clean style, consistent 24x24 viewBox, 1.5 stroke
@@ -95,19 +99,20 @@ const tbIdle = `${tb} text-gray-500 hover:bg-gray-200`
 const tbActive = `${tb} bg-blue-600 text-white`
 const sep = 'w-px h-5 bg-gray-300 mx-0.5'
 
-function Dropdown({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: React.ReactNode; align?: 'left' | 'right' }) {
+function Dropdown({ open, onClose, children, align = 'left', parentRef }: { open: boolean; onClose: () => void; children: React.ReactNode; align?: 'left' | 'right'; parentRef?: React.RefObject<HTMLElement | null> }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      const target = e.target as Node
+      if (ref.current && !ref.current.contains(target) && !(parentRef?.current?.contains(target))) onClose()
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [open, onClose])
+  }, [open, onClose, parentRef])
   if (!open) return null
   return (
-    <div ref={ref} className={`absolute top-full mt-1 ${align === 'right' ? 'right-0' : 'left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-3 z-50 min-w-[200px]`}>
+    <div ref={ref} className={`absolute top-full mt-1 ${align === 'right' ? 'right-0' : 'left-0'} bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-3 z-50 min-w-[200px]`}>
       {children}
     </div>
   )
@@ -126,9 +131,11 @@ export default function DrawingToolbar(props: Props) {
   const [showPalette, setShowPalette] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [editingSlot, setEditingSlot] = useState<number | null>(null)
+  const paletteButtonRef = useRef<HTMLButtonElement>(null)
+  const settingsButtonRef = useRef<HTMLDivElement>(null)
 
   return (
-    <div className="flex items-center gap-1 px-2 py-1.5 bg-gray-50 border-b border-gray-200 shrink-0 relative z-10">
+    <div className="flex items-center gap-1 px-2 py-1.5 bg-gray-50 border-b border-gray-200 shrink-0 relative z-10 flex-wrap">
       {/* Tools */}
       {tools.map((tool) => (
         <button
@@ -141,17 +148,33 @@ export default function DrawingToolbar(props: Props) {
         </button>
       ))}
 
+      {/* Shape fill toggle */}
+      {props.onShapeFillChange && (
+        <button
+          onClick={() => props.onShapeFillChange!(!props.shapeFill)}
+          className={props.shapeFill ? tbActive : tbIdle}
+          title={props.shapeFill ? 'Shapes: filled' : 'Shapes: outline only'}
+        >
+          {props.shapeFill ? (
+            <svg viewBox="0 0 24 24" className="w-[16px] h-[16px]" fill="currentColor" stroke="currentColor" strokeWidth="1"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" className="w-[16px] h-[16px]" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+          )}
+        </button>
+      )}
+
       <div className={sep} />
 
       {/* Color swatch (click to open palette) */}
       <div className="relative flex items-center">
         <button
+          ref={paletteButtonRef}
           onClick={() => { setShowPalette(!showPalette); setShowSettings(false) }}
           className={`w-5 h-5 rounded border-2 transition-all ${showPalette ? 'border-blue-500 scale-110' : 'border-gray-300'}`}
           style={{ backgroundColor: color }}
           title="Color palette (1-9, 0)"
         />
-        <Dropdown open={showPalette} onClose={() => setShowPalette(false)}>
+        <Dropdown open={showPalette} onClose={() => setShowPalette(false)} parentRef={paletteButtonRef as any}>
           <div className="flex items-center gap-1 mb-2">
             <span className="text-xs text-gray-500 font-medium">Color</span>
             <input
@@ -259,7 +282,7 @@ export default function DrawingToolbar(props: Props) {
 
       {/* Settings dropdown (paper, margin, spacing) */}
       {onPaperModeChange && (
-        <div className="relative">
+        <div className="relative" ref={settingsButtonRef}>
           <button
             onClick={() => { setShowSettings(!showSettings); setShowPalette(false) }}
             title="Canvas settings"
@@ -270,7 +293,7 @@ export default function DrawingToolbar(props: Props) {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
-          <Dropdown open={showSettings} onClose={() => setShowSettings(false)} align="right">
+          <Dropdown open={showSettings} onClose={() => setShowSettings(false)} align="right" parentRef={settingsButtonRef}>
             <div className="text-xs font-medium text-gray-500 mb-2">Paper</div>
             <div className="flex gap-1 mb-3">
               {(['plain', 'lined', 'grid', 'dot'] as PaperMode[]).map((p) => (
@@ -308,6 +331,29 @@ export default function DrawingToolbar(props: Props) {
                     onChange={(e) => onCanvasColorChange(e.target.value)}
                     className="w-6 h-6 rounded cursor-pointer border border-gray-300 ml-auto"
                   />
+                </div>
+              </div>
+            )}
+            {(props.onExportImage || props.onPrintDrawing) && (
+              <div className="mt-3 pt-2 border-t border-gray-100">
+                <div className="text-xs font-medium text-gray-500 mb-2">Export</div>
+                <div className="flex gap-2">
+                  {props.onExportImage && (
+                    <button onClick={props.onExportImage} className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors text-gray-700">
+                      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" />
+                      </svg>
+                      Save PNG
+                    </button>
+                  )}
+                  {props.onPrintDrawing && (
+                    <button onClick={props.onPrintDrawing} className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors text-gray-700">
+                      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z" />
+                      </svg>
+                      Save PDF
+                    </button>
+                  )}
                 </div>
               </div>
             )}

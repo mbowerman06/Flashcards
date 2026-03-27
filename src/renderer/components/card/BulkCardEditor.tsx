@@ -69,8 +69,8 @@ export default function BulkCardEditor() {
     setSaving(true)
     let count = 0
     for (const entry of nonEmpty) {
-      const front = serializeContent({ markdown: entry.front, drawing: null })
-      const back = serializeContent({ markdown: entry.back, drawing: null })
+      const front = serializeContent({ richText: null, plainText: entry.front, drawing: null })
+      const back = serializeContent({ richText: null, plainText: entry.back, drawing: null })
       await addCard(numericDeckId, front, back)
       count++
       setSavedCount(count)

@@ -53,9 +53,17 @@ function runSql(sql: string, params: unknown[] = []): void {
 }
 
 export function getCardsByDeck(deckId: number): Card[] {
-  return queryAll('SELECT * FROM cards WHERE deck_id = ? ORDER BY created_at DESC', [deckId]).map(
+  return queryAll('SELECT * FROM cards WHERE deck_id = ? ORDER BY sort_order ASC, created_at DESC', [deckId]).map(
     rowToCard
   )
+}
+
+export function updateCardOrder(ids: number[]): void {
+  const db = getDb()
+  for (let i = 0; i < ids.length; i++) {
+    db.run('UPDATE cards SET sort_order = ? WHERE id = ?', [i, ids[i]])
+  }
+  saveDb()
 }
 
 export function getCard(id: number): Card | undefined {
@@ -89,8 +97,10 @@ export function updateCard(id: number, frontContent: string, backContent: string
 }
 
 export function deleteCard(id: number): void {
-  runSql('DELETE FROM review_history WHERE card_id = ?', [id])
-  runSql('DELETE FROM cards WHERE id = ?', [id])
+  const db = getDb()
+  db.run('DELETE FROM review_history WHERE card_id = ?', [id])
+  db.run('DELETE FROM cards WHERE id = ?', [id])
+  saveDb()
 }
 
 export function moveCardsToDeck(cardIds: number[], targetDeckId: number): void {
@@ -103,22 +113,23 @@ export function moveAllCardsToDeck(sourceDeckId: number, targetDeckId: number): 
 }
 
 export function duplicateCardsToDeck(cardIds: number[], targetDeckId: number): void {
+  const db = getDb()
   for (const id of cardIds) {
     const card = getCard(id)
     if (!card) continue
-    const db = getDb()
     db.run('INSERT INTO cards (deck_id, front_content, back_content) VALUES (?, ?, ?)', [
       targetDeckId, card.front_content, card.back_content
     ])
-    saveDb()
   }
+  saveDb()
 }
 
 export function deleteCards(ids: number[]): void {
-  for (const id of ids) {
-    runSql('DELETE FROM review_history WHERE card_id = ?', [id])
-    runSql('DELETE FROM cards WHERE id = ?', [id])
-  }
+  const db = getDb()
+  const placeholders = ids.map(() => '?').join(',')
+  db.run(`DELETE FROM review_history WHERE card_id IN (${placeholders})`, ids)
+  db.run(`DELETE FROM cards WHERE id IN (${placeholders})`, ids)
+  saveDb()
 }
 
 export function getDueCards(deckId: number): Card[] {
@@ -128,17 +139,23 @@ export function getDueCards(deckId: number): Card[] {
   ).map(rowToCard)
 }
 
-export function searchCards(query: string, deckId?: number): Card[] {
-  // Search across all card content (markdown text inside JSON)
+export function getCardsByTag(deckId: number, tagId: number): Card[] {
+  return queryAll(
+    `SELECT c.* FROM cards c JOIN card_tags ct ON c.id = ct.card_id WHERE c.deck_id = ? AND ct.tag_id = ? ORDER BY c.sort_order ASC, c.created_at DESC`,
+    [deckId, tagId]
+  ).map(rowToCard)
+}
+
+export function searchCards(query: string, deckId?: number, limit: number = 100): Card[] {
   if (deckId) {
     return queryAll(
-      `SELECT * FROM cards WHERE deck_id = ? AND (front_content LIKE ? OR back_content LIKE ?) ORDER BY created_at DESC`,
-      [deckId, `%${query}%`, `%${query}%`]
+      `SELECT * FROM cards WHERE deck_id = ? AND (front_content LIKE ? OR back_content LIKE ?) ORDER BY created_at DESC LIMIT ?`,
+      [deckId, `%${query}%`, `%${query}%`, limit]
     ).map(rowToCard)
   }
   return queryAll(
-    `SELECT * FROM cards WHERE front_content LIKE ? OR back_content LIKE ? ORDER BY created_at DESC`,
-    [`%${query}%`, `%${query}%`]
+    `SELECT * FROM cards WHERE front_content LIKE ? OR back_content LIKE ? ORDER BY created_at DESC LIMIT ?`,
+    [`%${query}%`, `%${query}%`, limit]
   ).map(rowToCard)
 }
 
