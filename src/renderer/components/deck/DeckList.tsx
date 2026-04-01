@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useDeckStore } from '../../stores/deck-store'
+import { useUIStore } from '../../stores/ui-store'
 import * as api from '../../api/ipc-client'
 import DeckForm from './DeckForm'
 import DeckStats from './DeckStats'
@@ -86,6 +87,12 @@ export default function DeckList() {
   const [folders, setFolders] = useState<{ id: number; name: string; parent_id: number | null }[]>([])
   const [showFolderForm, setShowFolderForm] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'pushing' | 'pulling'>('idle')
+  const [syncError, setSyncError] = useState('')
+  const githubRepo = useUIStore((s) => s.githubRepo)
+  const setGithubRepo = useUIStore((s) => s.setGithubRepo)
+  const [showSyncSetup, setShowSyncSetup] = useState(false)
+  const [syncRepoInput, setSyncRepoInput] = useState('')
   const [expandedFolders, setExpandedFolders] = useState<Set<number>>(new Set())
   const [editFolder, setEditFolder] = useState<{ id: number; name: string } | null>(null)
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<number | null>(null)
@@ -127,6 +134,17 @@ export default function DeckList() {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [showExportDropdown])
+
+  // Close sync setup dropdown on outside click
+  useEffect(() => {
+    if (!showSyncSetup) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('[data-sync-dropdown]')) setShowSyncSetup(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showSyncSetup])
 
   // Auto-open new deck form from Ctrl+Shift+N
   useEffect(() => {
@@ -286,6 +304,7 @@ export default function DeckList() {
             <button
               onClick={() => navigate('/import')}
               className="px-4 py-2 bg-green-500 text-white hover:bg-green-600 transition-colors font-medium rounded-l-lg"
+              title="Import cards from CSV, Quizlet, or Anki"
             >
               Import
             </button>
@@ -293,6 +312,7 @@ export default function DeckList() {
               onClick={() => { setShowExportDropdown(showExportDropdown === 'export' ? false : 'export') }}
               disabled={decks.length === 0}
               className="px-3 py-2 bg-green-600 text-white hover:bg-green-700 transition-colors font-medium border-l border-green-400 disabled:opacity-50"
+              title="Export a deck to CSV, TSV, or Anki format"
             >
               Export
             </button>
@@ -300,6 +320,7 @@ export default function DeckList() {
               onClick={() => { setShowExportDropdown(showExportDropdown === 'print' ? false : 'print') }}
               disabled={decks.length === 0}
               className="px-3 py-2 bg-green-700 text-green-100 hover:bg-green-800 transition-colors font-medium border-l border-green-500 disabled:opacity-50 rounded-r-lg"
+              title="Print a deck as a study sheet"
             >
               Print
             </button>
@@ -323,17 +344,91 @@ export default function DeckList() {
               </div>
             )}
           </div>
+          <div className="flex rounded-lg relative">
+            <button
+              disabled={syncStatus !== 'idle'}
+              onClick={async () => {
+                if (!githubRepo) { setShowSyncSetup(true); setSyncRepoInput(githubRepo); return }
+                setSyncStatus('pulling'); setSyncError('')
+                const res = await api.githubPull(githubRepo)
+                if (!res.success) { setSyncError(res.error || 'Pull failed'); setSyncStatus('idle') }
+              }}
+              className="px-3 py-2 bg-purple-500 text-white hover:bg-purple-600 transition-colors font-medium rounded-l-lg disabled:opacity-60"
+              title={githubRepo ? `Pull from ${githubRepo}` : 'Set up GitHub sync'}
+            >
+              {syncStatus === 'pulling' ? (
+                <svg className="w-4 h-4 animate-spin inline" fill="none" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" /></svg>
+              ) : 'Pull'}
+            </button>
+            <button
+              disabled={syncStatus !== 'idle'}
+              onClick={async () => {
+                if (!githubRepo) { setShowSyncSetup(true); setSyncRepoInput(githubRepo); return }
+                setSyncStatus('pushing'); setSyncError('')
+                const res = await api.githubPush(githubRepo)
+                setSyncStatus('idle')
+                if (!res.success) setSyncError(res.error || 'Push failed')
+              }}
+              className="px-3 py-2 bg-purple-600 text-white hover:bg-purple-700 transition-colors font-medium border-l border-purple-400 disabled:opacity-60"
+              title={githubRepo ? `Push to ${githubRepo}` : 'Set up GitHub sync'}
+            >
+              {syncStatus === 'pushing' ? (
+                <svg className="w-4 h-4 animate-spin inline" fill="none" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" /></svg>
+              ) : 'Push'}
+            </button>
+            <button
+              onClick={() => { setShowSyncSetup(true); setSyncRepoInput(githubRepo) }}
+              className="px-2 py-2 bg-purple-700 text-purple-200 hover:bg-purple-800 transition-colors font-medium border-l border-purple-500 rounded-r-lg"
+              title="Configure GitHub repo for syncing"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 16 16">
+                <path d="M8 10a2 2 0 100-4 2 2 0 000 4z" />
+                <path d="M13.4 6.5l-.8-1.4-.9.2a4.5 4.5 0 00-.7-.4l-.2-.9h-1.6l-.2.9a4.5 4.5 0 00-.7.4l-.9-.2-.8 1.4.7.6a4.5 4.5 0 000 .8l-.7.6.8 1.4.9-.2c.2.2.4.3.7.4l.2.9h1.6l.2-.9c.3-.1.5-.2.7-.4l.9.2.8-1.4-.7-.6a4.5 4.5 0 000-.8l.7-.6z" />
+              </svg>
+            </button>
+            {showSyncSetup && (
+              <div data-sync-dropdown className="absolute top-full right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 p-4 w-80">
+                <div className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">GitHub Sync</div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                  Enter a GitHub repo URL to sync your data. You must have git installed and SSH/HTTPS credentials configured.
+                </p>
+                <input
+                  type="text"
+                  value={syncRepoInput}
+                  onChange={(e) => setSyncRepoInput(e.target.value)}
+                  placeholder="https://github.com/user/flashcards-data.git"
+                  className="w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 mb-3"
+                />
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => setShowSyncSetup(false)}
+                    className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setGithubRepo(syncRepoInput.trim())
+                      setShowSyncSetup(false)
+                    }}
+                    className="px-3 py-1 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="flex rounded-lg">
             <button
               onClick={() => setShowForm(true)}
               className="px-4 py-2 bg-blue-500 text-white hover:bg-blue-600 transition-colors font-medium rounded-l-lg"
+              title="Create a new flashcard deck"
             >
               + New Deck
             </button>
             <button
               onClick={() => setShowFolderForm(true)}
               className="px-3 py-2 bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium border-l border-blue-400 rounded-r-lg"
-              title="Create folder"
+              title="Create a folder to organize decks"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
@@ -343,6 +438,15 @@ export default function DeckList() {
           </div>
         </div>
       </div>
+
+      {syncError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg flex items-center justify-between">
+          <span className="text-sm text-red-700 dark:text-red-300">{syncError}</span>
+          <button onClick={() => setSyncError('')} className="text-red-400 hover:text-red-600 ml-3">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+          </button>
+        </div>
+      )}
 
       {/* Search and Sort controls */}
       <div className="flex gap-3 mb-4">
@@ -522,7 +626,7 @@ export default function DeckList() {
                             <button
                               onClick={async (e) => { e.stopPropagation(); await api.setDeckFolder(deck.id, null); fetchDecks() }}
                               className="p-1 text-gray-400 hover:text-orange-600"
-                              title="Remove from folder"
+                              title="Remove this deck from the folder"
                             >
                               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
@@ -562,7 +666,7 @@ export default function DeckList() {
                   <button
                     onClick={() => setEditDeck({ id: deck.id, name: deck.name })}
                     className="p-1.5 text-gray-400 hover:text-blue-600 rounded transition-colors"
-                    title="Rename"
+                    title="Rename this deck"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path
@@ -576,7 +680,7 @@ export default function DeckList() {
                   <button
                     onClick={() => setMergingDeck(mergingDeck === deck.id ? null : deck.id)}
                     className={`p-1.5 rounded transition-colors ${mergingDeck === deck.id ? 'text-blue-600' : 'text-gray-400 hover:text-blue-600'}`}
-                    title="Merge into another deck"
+                    title="Merge all cards into another deck"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -588,7 +692,7 @@ export default function DeckList() {
                       <button
                         onClick={() => setMoveDeckToFolder(moveDeckToFolder === deck.id ? null : deck.id)}
                         className={`p-1.5 rounded transition-colors ${moveDeckToFolder === deck.id ? 'text-yellow-600' : 'text-gray-400 hover:text-yellow-600'}`}
-                        title="Move to folder"
+                        title="Move this deck into a folder"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -628,7 +732,7 @@ export default function DeckList() {
                     <button
                       onClick={() => setConfirmDelete(deck.id)}
                       className="p-1.5 text-gray-400 hover:text-red-600 rounded transition-colors"
-                      title="Delete"
+                      title="Delete this deck and all its cards"
                     >
                       <svg
                         className="w-4 h-4"

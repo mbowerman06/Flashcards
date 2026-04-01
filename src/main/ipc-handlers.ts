@@ -1,10 +1,13 @@
-import { ipcMain, BrowserWindow, dialog } from 'electron'
-import { writeFileSync } from 'fs'
+import { ipcMain, BrowserWindow, dialog, app } from 'electron'
+import { writeFileSync, existsSync, mkdirSync, readFileSync, copyFileSync } from 'fs'
+import { join } from 'path'
+import { execFile } from 'child_process'
 import * as deckRepo from './repositories/deck-repository'
 import * as cardRepo from './repositories/card-repository'
 import * as reviewRepo from './repositories/review-repository'
 import * as tagRepo from './repositories/tag-repository'
 import * as templateRepo from './repositories/template-repository'
+import * as edgeTts from './edge-tts'
 
 function sm2(
   grade: number,
@@ -270,5 +273,127 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle('window:close', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+
+  // Edge TTS (neural voices)
+  ipcMain.handle('tts:getVoices', async () => {
+    try {
+      return await edgeTts.getVoices()
+    } catch (err) {
+      console.error('[IPC] tts:getVoices error:', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('tts:synthesize', async (_event, text: string, voice: string, rate?: string) => {
+    try {
+      const result = await edgeTts.synthesize(text, voice, rate || '+0%')
+      return {
+        audio: result.audio.toString('base64'),
+        words: result.words
+      }
+    } catch (err) {
+      console.error('[IPC] tts:synthesize error:', err)
+      return null
+    }
+  })
+
+  // ========== GitHub Sync ==========
+
+  const runGit = (args: string[], cwd: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      execFile('git', args, { cwd, timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr || err.message))
+        else resolve(stdout.trim())
+      })
+    })
+  }
+
+  const getSyncDir = () => join(app.getPath('userData'), 'sync')
+
+  ipcMain.handle('github:push', async (_event, repoUrl: string) => {
+    const syncDir = getSyncDir()
+    const dbPath = join(app.getPath('userData'), 'flashcards.db')
+
+    try {
+      // Initialize or update the sync repo
+      if (!existsSync(join(syncDir, '.git'))) {
+        mkdirSync(syncDir, { recursive: true })
+        await runGit(['init'], syncDir)
+        await runGit(['remote', 'add', 'origin', repoUrl], syncDir)
+      } else {
+        // Update remote URL in case it changed
+        try { await runGit(['remote', 'set-url', 'origin', repoUrl], syncDir) } catch {}
+      }
+
+      // Copy current database to sync dir
+      copyFileSync(dbPath, join(syncDir, 'flashcards.db'))
+
+      // Stage, commit, push
+      await runGit(['add', 'flashcards.db'], syncDir)
+
+      // Check if there's anything to commit
+      try {
+        await runGit(['diff', '--cached', '--quiet'], syncDir)
+        // No changes — still push in case local is ahead
+      } catch {
+        // There are changes to commit
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19)
+        await runGit(['commit', '-m', `Sync: ${timestamp}`], syncDir)
+      }
+
+      // Ensure we're on main branch
+      try { await runGit(['branch', '-M', 'main'], syncDir) } catch {}
+
+      await runGit(['push', '-u', 'origin', 'main'], syncDir)
+      return { success: true }
+    } catch (err: any) {
+      console.error('[IPC] github:push error:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('github:pull', async (_event, repoUrl: string) => {
+    const syncDir = getSyncDir()
+    const dbPath = join(app.getPath('userData'), 'flashcards.db')
+    const backupPath = dbPath + '.pre-sync-backup'
+
+    try {
+      if (!existsSync(join(syncDir, '.git'))) {
+        // Clone the repo
+        mkdirSync(syncDir, { recursive: true })
+        await runGit(['clone', repoUrl, '.'], syncDir)
+      } else {
+        // Update remote and pull
+        try { await runGit(['remote', 'set-url', 'origin', repoUrl], syncDir) } catch {}
+        await runGit(['fetch', 'origin'], syncDir)
+        await runGit(['reset', '--hard', 'origin/main'], syncDir)
+      }
+
+      const pulledDb = join(syncDir, 'flashcards.db')
+      if (!existsSync(pulledDb)) {
+        return { success: false, error: 'No flashcards.db found in the repository.' }
+      }
+
+      // Validate SQLite header
+      const header = readFileSync(pulledDb, { encoding: null }).slice(0, 16).toString('ascii')
+      if (!header.startsWith('SQLite format 3')) {
+        return { success: false, error: 'Pulled file is not a valid SQLite database.' }
+      }
+
+      // Backup current DB then replace
+      if (existsSync(dbPath)) {
+        copyFileSync(dbPath, backupPath)
+      }
+      copyFileSync(pulledDb, dbPath)
+
+      // Relaunch to load new database
+      app.relaunch()
+      app.exit(0)
+      return { success: true }
+    } catch (err: any) {
+      console.error('[IPC] github:pull error:', err)
+      return { success: false, error: err.message }
+    }
   })
 }

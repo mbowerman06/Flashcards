@@ -87,3 +87,7 @@ export const setDeckFolder = (deckId: number, folderId: number | null) => api().
 // Backup
 export const backupExport = () => api().backupExport()
 export const backupImport = (data: string) => api().backupImport(data)
+
+// GitHub Sync
+export const githubPush = (repoUrl: string) => api().githubPush(repoUrl)
+export const githubPull = (repoUrl: string) => api().githubPull(repoUrl)

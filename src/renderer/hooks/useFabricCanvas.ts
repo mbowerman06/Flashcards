@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import {
-  Canvas, PencilBrush, Rect, Ellipse, Line, IText, FabricObject, Triangle, Group, FabricImage
+  Canvas, PencilBrush, Rect, Ellipse, Line, IText, FabricObject, Triangle, Group, FabricImage, ActiveSelection
 } from 'fabric'
 import katex from 'katex'
 import html2canvas from 'html2canvas'
@@ -207,6 +207,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
   const activeToolRef = useRef<Tool>('pen')
   const textJustExitedRef = useRef(false)
   const colorPaletteRef = useRef(colorPalette)
+  const clipboardRef = useRef<FabricObject[]>([])
   const canvasHeight = options.canvasHeight ?? 400
 
   // Keep ref in sync
@@ -284,6 +285,8 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     const markActive = () => { activeCanvasId = canvasIdRef.current }
     parent.addEventListener('mousedown', markActive)
     parent.addEventListener('focusin', markActive)
+    // Immediately mark as active on mount so shortcuts work right away
+    markActive()
 
     if (options.readOnly) {
       canvas.selection = false
@@ -537,10 +540,10 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
 
         // Pan
         if (lastTouchCenter) {
-          const vpt = canvas.viewportTransform!
+          const vpt = [...canvas.viewportTransform!] as [number, number, number, number, number, number]
           vpt[4] += cx - lastTouchCenter.x
           vpt[5] += cy - lastTouchCenter.y
-          canvas.requestRenderAll()
+          canvas.setViewportTransform(vpt)
         }
         lastTouchCenter = { x: cx, y: cy }
       }
@@ -580,28 +583,91 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     canvasEl.addEventListener('touchmove', handleTouchMove, { passive: false })
     canvasEl.addEventListener('touchend', handleTouchEnd)
 
-    // Resize
+    // Pen vs hand: intercept pointer events so finger/palm touch pans instead of drawing
+    // Only pen stylus (pointerType==='pen') and mouse can draw; touch input pans
+    let fingerPanActive = false
+    let fingerPanPoint: { x: number; y: number } | null = null
+    const upperCanvas = canvas.getSelectionElement()
+
+    const handlePointerDownPenFilter = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return // allow pen & mouse through
+      const tool = activeToolRef.current
+      // Only intercept when in a drawing tool mode (pen, eraser, shapes)
+      if (tool !== 'pen' && tool !== 'eraser' && tool !== 'rectangle' &&
+          tool !== 'circle' && tool !== 'arrow' && tool !== 'text') return
+      // Prevent Fabric from seeing this touch as a draw stroke
+      e.stopPropagation()
+      e.preventDefault()
+      // Temporarily disable drawing mode for this touch
+      if (canvas.isDrawingMode) canvas.isDrawingMode = false
+      fingerPanActive = true
+      fingerPanPoint = { x: e.clientX, y: e.clientY }
+    }
+    const handlePointerMovePenFilter = (e: PointerEvent) => {
+      if (!fingerPanActive || !fingerPanPoint) return
+      e.stopPropagation()
+      e.preventDefault()
+      const vpt = [...canvas.viewportTransform!] as [number, number, number, number, number, number]
+      vpt[4] += e.clientX - fingerPanPoint.x
+      vpt[5] += e.clientY - fingerPanPoint.y
+      fingerPanPoint = { x: e.clientX, y: e.clientY }
+      canvas.setViewportTransform(vpt)
+    }
+    const handlePointerUpPenFilter = (e: PointerEvent) => {
+      if (!fingerPanActive) return
+      e.stopPropagation()
+      fingerPanActive = false
+      fingerPanPoint = null
+      // Restore drawing mode if the active tool needs it
+      if (activeToolRef.current === 'pen') {
+        canvas.isDrawingMode = true
+      }
+    }
+    if (upperCanvas) {
+      upperCanvas.addEventListener('pointerdown', handlePointerDownPenFilter, { capture: true })
+      upperCanvas.addEventListener('pointermove', handlePointerMovePenFilter, { capture: true })
+      upperCanvas.addEventListener('pointerup', handlePointerUpPenFilter, { capture: true })
+    }
+
+    // Resize — always use actual parent dimensions, not the stale canvasHeight closure
     const handleResize = () => {
-      if (parent && parent.clientWidth > 0) {
-        canvas.setDimensions({ width: parent.clientWidth, height: canvasHeight })
+      if (parent && parent.clientWidth > 0 && parent.clientHeight > 0) {
+        canvas.setDimensions({ width: parent.clientWidth, height: parent.clientHeight })
         canvas.renderAll()
       }
     }
     window.addEventListener('resize', handleResize)
 
-    let resizeObserver: ResizeObserver | null = null
-    if (options.readOnly) {
-      resizeObserver = new ResizeObserver(() => {
-        if (parent.clientWidth > 0) {
-          canvas.setDimensions({ width: parent.clientWidth, height: canvasHeight })
-          canvas.renderAll()
-        }
-      })
-      resizeObserver.observe(parent)
+    // Re-validate canvas after visibility changes (alt-tab, minimize, fullscreen)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        // Multiple checks to handle layout settling at different rates
+        setTimeout(handleResize, 50)
+        setTimeout(handleResize, 200)
+        setTimeout(handleResize, 500)
+      }
     }
+    const handleFocus = () => {
+      setTimeout(handleResize, 50)
+      setTimeout(handleResize, 200)
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleFocus)
+
+    let resizeObserver: ResizeObserver | null = null
+    // Use ResizeObserver for all canvases to catch layout changes (view switch, fullscreen, etc.)
+    resizeObserver = new ResizeObserver(() => {
+      if (parent.clientWidth > 0 && parent.clientHeight > 0) {
+        canvas.setDimensions({ width: parent.clientWidth, height: parent.clientHeight })
+        canvas.renderAll()
+      }
+    })
+    resizeObserver.observe(parent)
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleFocus)
       parent.removeEventListener('mousedown', markActive)
       parent.removeEventListener('focusin', markActive)
       if (activeCanvasId === canvasIdRef.current) activeCanvasId = null
@@ -609,6 +675,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       canvasEl.removeEventListener('touchstart', handleTouchStart)
       canvasEl.removeEventListener('touchmove', handleTouchMove)
       canvasEl.removeEventListener('touchend', handleTouchEnd)
+      if (upperCanvas) {
+        upperCanvas.removeEventListener('pointerdown', handlePointerDownPenFilter, { capture: true } as EventListenerOptions)
+        upperCanvas.removeEventListener('pointermove', handlePointerMovePenFilter, { capture: true } as EventListenerOptions)
+        upperCanvas.removeEventListener('pointerup', handlePointerUpPenFilter, { capture: true } as EventListenerOptions)
+      }
       resizeObserver?.disconnect()
       canvas.dispose()
       fabricRef.current = null
@@ -626,6 +697,22 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     if (activeObj && activeObj instanceof IText && (activeObj as InstanceType<typeof IText>).isEditing) {
       (activeObj as InstanceType<typeof IText>).exitEditing()
     }
+
+    // Abort any in-progress freehand drawing (prevents ghost lines when toggling pen/eraser mid-stroke)
+    // Must reset BOTH the brush and canvas internal drawing state
+    const prevBrush = canvas.freeDrawingBrush as any
+    if (prevBrush) {
+      if (prevBrush._isCurrentlyDrawing) {
+        prevBrush._isCurrentlyDrawing = false
+        prevBrush._points = []
+        prevBrush._reset?.()
+      }
+    }
+    ;(canvas as any)._isCurrentlyDrawing = false
+
+    // Reset eraser state so toggling pen→eraser doesn't ghost-erase
+    isErasingRef.current = false
+    erasedSetRef.current = new Set()
 
     canvas.isDrawingMode = false
     canvas.selection = true
@@ -662,8 +749,78 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         if (e.key === 'y') { e.preventDefault(); redo(); return }
         if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomBy(1.25); return }
         if (e.key === '-') { e.preventDefault(); zoomBy(0.8); return }
+        if (e.key === 'c') {
+          // Ctrl+C: copy selected objects individually (all types: paths, shapes, images, groups)
+          e.preventDefault()
+          const selected = canvas.getActiveObjects()
+          if (selected.length > 0) {
+            Promise.all(selected.map((obj) => obj.clone())).then((clones) => {
+              // Store clones with their absolute positions
+              clones.forEach((clone, i) => {
+                const orig = selected[i]
+                // getActiveObjects returns objects with positions relative to the group
+                // for multi-selections, so compute the absolute canvas position
+                const absLeft = orig.getCenterPoint().x - (orig.getScaledWidth() / 2)
+                const absTop = orig.getCenterPoint().y - (orig.getScaledHeight() / 2)
+                clone.set({ left: absLeft, top: absTop })
+                clone.setCoords()
+                // Preserve custom properties
+                if ((orig as any)._latexSource) {
+                  ;(clone as any)._latexSource = (orig as any)._latexSource
+                  ;(clone as any)._latexColor = (orig as any)._latexColor
+                  ;(clone as any)._latexFontSize = (orig as any)._latexFontSize
+                }
+              })
+              clipboardRef.current = clones
+            }).catch(() => {})
+          }
+          return
+        }
         if (e.key === 'v') {
-          // Ctrl+V: paste image from clipboard
+          // Ctrl+V: paste copied canvas objects, or paste image from system clipboard
+          e.preventDefault()
+          if (clipboardRef.current.length > 0) {
+            const PASTE_OFFSET = 20
+            // Clone the clipboard items (so we can paste again later)
+            Promise.all(clipboardRef.current.map((obj) => obj.clone())).then((clones) => {
+              canvas.discardActiveObject()
+              isLoadingRef.current = true
+              const addedObjects: FabricObject[] = []
+
+              for (let i = 0; i < clones.length; i++) {
+                const clone = clones[i]
+                clone.set({
+                  left: (clone.left ?? 0) + PASTE_OFFSET,
+                  top: (clone.top ?? 0) + PASTE_OFFSET,
+                })
+                clone.setCoords()
+                // Preserve custom properties
+                const src = clipboardRef.current[i] as any
+                if (src._latexSource) {
+                  ;(clone as any)._latexSource = src._latexSource
+                  ;(clone as any)._latexColor = src._latexColor
+                  ;(clone as any)._latexFontSize = src._latexFontSize
+                }
+                canvas.add(clone)
+                addedObjects.push(clone)
+              }
+              isLoadingRef.current = false
+
+              // Select the pasted objects so they're immediately movable
+              if (addedObjects.length === 1) {
+                canvas.setActiveObject(addedObjects[0])
+              } else if (addedObjects.length > 1) {
+                const sel = new ActiveSelection(addedObjects, { canvas })
+                canvas.setActiveObject(sel)
+              }
+              canvas.requestRenderAll()
+              saveUndoState()
+              // Update clipboard to new positions so repeated paste cascades
+              clipboardRef.current = clones
+            }).catch(() => {})
+            return
+          }
+          // Fallback: paste image from system clipboard
           navigator.clipboard.read().then(async (items) => {
             for (const item of items) {
               const imageType = item.types.find((t) => t.startsWith('image/'))
@@ -724,12 +881,31 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         return
       }
 
-      // 0-9 = select color from palette
+      // 0-9 = select color from palette (also applies to selected objects)
       if (lower >= '0' && lower <= '9') {
         const idx = lower === '0' ? 9 : parseInt(lower) - 1
         const palette = colorPaletteRef.current
         if (idx < palette.length) {
-          setColor(palette[idx])
+          const newColor = palette[idx]
+          setColor(newColor)
+          // Apply to selected objects
+          const activeObjs = canvas.getActiveObjects()
+          if (activeObjs.length > 0) {
+            for (const obj of activeObjs) {
+              if (obj instanceof IText) {
+                obj.set('fill', newColor)
+              } else if (obj.type === 'group') {
+                (obj as any)._objects?.forEach((child: any) => {
+                  child.set('stroke', newColor)
+                  child.set('fill', child.type === 'triangle' ? newColor : '')
+                })
+              } else {
+                obj.set('stroke', newColor)
+              }
+            }
+            canvas.requestRenderAll()
+            saveUndoState()
+          }
         }
         return
       }
@@ -751,11 +927,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       })
       canvas.on('mouse:move', (opt) => {
         if (isPanningRef.current && lastPanPointRef.current) {
-          const vpt = canvas.viewportTransform!
+          const vpt = [...canvas.viewportTransform!] as [number, number, number, number, number, number]
           vpt[4] += opt.e.clientX - lastPanPointRef.current.x
           vpt[5] += opt.e.clientY - lastPanPointRef.current.y
           lastPanPointRef.current = { x: opt.e.clientX, y: opt.e.clientY }
-          canvas.requestRenderAll()
+          canvas.setViewportTransform(vpt)
           return
         }
         toolMouseMove(opt)
@@ -784,10 +960,14 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
     }
 
     if (activeTool === 'pen') {
+      const brush = new PencilBrush(canvas)
+      brush.color = color
+      brush.width = strokeWidth
+      canvas.freeDrawingBrush = brush
+      // Ensure clean internal state before enabling drawing mode
+      ;(canvas as any)._isCurrentlyDrawing = false
+      ;(brush as any)._isCurrentlyDrawing = false
       canvas.isDrawingMode = true
-      canvas.freeDrawingBrush = new PencilBrush(canvas)
-      canvas.freeDrawingBrush.color = color
-      canvas.freeDrawingBrush.width = strokeWidth
 
       // Ctrl+Shift pen: replace freehand path with a 45-degree snapped straight line
       let penStartPoint: { x: number; y: number } | null = null
@@ -842,11 +1022,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       })
       canvas.on('mouse:move', (opt) => {
         if (isPanningRef.current && lastPanPointRef.current) {
-          const vpt = canvas.viewportTransform!
+          const vpt = [...canvas.viewportTransform!] as [number, number, number, number, number, number]
           vpt[4] += opt.e.clientX - lastPanPointRef.current.x
           vpt[5] += opt.e.clientY - lastPanPointRef.current.y
           lastPanPointRef.current = { x: opt.e.clientX, y: opt.e.clientY }
-          canvas.requestRenderAll()
+          canvas.setViewportTransform(vpt)
         }
       })
       canvas.on('mouse:up', () => {
@@ -857,32 +1037,86 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         }
       })
     } else if (activeTool === 'eraser') {
-      // Drag eraser: erase anything the cursor touches while mouse is held
+      // Object eraser: drag to erase objects the cursor touches
+      // Hold Shift: switches to a paint-over eraser (PencilBrush with bg color) with real-time feedback
       canvas.selection = false
       canvas.skipTargetFind = false
       canvas.defaultCursor = 'crosshair'
       canvas.hoverCursor = 'crosshair'
 
+      // Proximity-based hit detection: find all objects within radius of pointer
+      const ERASER_RADIUS = 8
+      const findObjectsNearPoint = (e: Event): FabricObject[] => {
+        const pointer = canvas.getScenePoint(e)
+        const radius = ERASER_RADIUS / (canvas.getZoom() || 1)
+        const hits: FabricObject[] = []
+        for (const obj of canvas.getObjects()) {
+          if (erasedSetRef.current.has(obj)) continue
+          const bound = obj.getBoundingRect()
+          const sw = (obj.strokeWidth ?? 0) / 2
+          const pad = radius + sw
+          if (
+            pointer.x >= bound.left - pad && pointer.x <= bound.left + bound.width + pad &&
+            pointer.y >= bound.top - pad && pointer.y <= bound.top + bound.height + pad
+          ) {
+            hits.push(obj)
+          }
+        }
+        return hits
+      }
+
+      // Ctrl-toggled paint-over eraser: hold Ctrl to paint with bg color, release to return to object eraser
+      let paintEraserActive = false
+      const enterPaintEraser = () => {
+        if (paintEraserActive) return
+        paintEraserActive = true
+        const bgColor = (canvas.backgroundColor as string) || '#ffffff'
+        const eraserBrush = new PencilBrush(canvas)
+        eraserBrush.color = bgColor
+        eraserBrush.width = strokeWidth * 4
+        canvas.freeDrawingBrush = eraserBrush
+        canvas.isDrawingMode = true
+        canvas.defaultCursor = 'cell'
+      }
+      const exitPaintEraser = () => {
+        if (!paintEraserActive) return
+        paintEraserActive = false
+        canvas.isDrawingMode = false
+        canvas.defaultCursor = 'crosshair'
+        canvas.hoverCursor = 'crosshair'
+      }
+      const eraserModKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Control' && activeToolRef.current === 'eraser') enterPaintEraser()
+      }
+      const eraserModKeyUp = (e: KeyboardEvent) => {
+        if (e.key === 'Control') exitPaintEraser()
+      }
+      window.addEventListener('keydown', eraserModKeyDown)
+      window.addEventListener('keyup', eraserModKeyUp)
+
       toolMouseDown = (opt: any) => {
+        if (paintEraserActive) return // PencilBrush handles it
         isErasingRef.current = true
         erasedSetRef.current = new Set()
-        const target = canvas.findTarget(opt.e)
-        if (target) {
+        const hits = findObjectsNearPoint(opt.e)
+        for (const target of hits) {
           erasedSetRef.current.add(target)
           canvas.remove(target)
-          canvas.renderAll()
         }
+        if (hits.length > 0) canvas.renderAll()
       }
       toolMouseMove = (opt: any) => {
+        if (paintEraserActive) return
         if (!isErasingRef.current) return
-        const target = canvas.findTarget(opt.e)
-        if (target && !erasedSetRef.current.has(target)) {
+        const hits = findObjectsNearPoint(opt.e)
+        for (const target of hits) {
           erasedSetRef.current.add(target)
           canvas.remove(target)
-          canvas.renderAll()
         }
+        if (hits.length > 0) canvas.renderAll()
       }
       toolMouseUp = () => {
+        if (paintEraserActive) return
         if (isErasingRef.current && erasedSetRef.current.size > 0) {
           saveUndoState()
         }
@@ -890,6 +1124,14 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         erasedSetRef.current = new Set()
       }
       setupPanWrapper()
+
+      // Return extra cleanup for paint-eraser modifier key listeners
+      const prevCleanup = () => {
+        window.removeEventListener('keydown', eraserModKeyDown)
+        window.removeEventListener('keyup', eraserModKeyUp)
+      }
+      const origReturn = () => { window.removeEventListener('keydown', handleKeyDown) }
+      return () => { origReturn(); prevCleanup() }
     } else if (activeTool === 'text') {
       canvas.defaultCursor = 'text'
       toolMouseDown = (opt: any) => {
@@ -911,12 +1153,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       setupPanWrapper()
     } else if (activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'arrow') {
       canvas.selection = false
-      canvas.skipTargetFind = false
+      canvas.skipTargetFind = true
       canvas.defaultCursor = 'crosshair'
+      canvas.hoverCursor = 'crosshair'
 
       toolMouseDown = (opt: any) => {
-        // If clicking on an existing object, let fabric handle selection/dragging — don't create a new shape
-        if (canvas.findTarget(opt.e)) return
         const pointer = canvas.getScenePoint(opt.e)
         shapeStartRef.current = { x: pointer.x, y: pointer.y }
 
@@ -984,7 +1225,7 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
         canvas.renderAll()
       }
 
-      toolMouseUp = () => {
+      toolMouseUp = (opt: any) => {
         if (activeShapeRef.current && shapeStartRef.current) {
           // For arrow tool: replace the dashed line with a proper arrow group
           if (activeTool === 'arrow') {
@@ -994,11 +1235,18 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
             canvas.remove(line)
             const arrow = createArrow(x1, y1, x2, y2, color, strokeWidth)
             canvas.add(arrow)
+            canvas.setActiveObject(arrow)
             isLoadingRef.current = false
           } else {
             activeShapeRef.current.setCoords()
+            canvas.setActiveObject(activeShapeRef.current)
           }
           saveUndoState()
+          // Auto-switch to select mode after drawing a shape, unless Ctrl is held
+          const e = opt?.e as MouseEvent | undefined
+          if (!e?.ctrlKey) {
+            setActiveTool('select')
+          }
         }
         shapeStartRef.current = null
         activeShapeRef.current = null
@@ -1018,11 +1266,11 @@ export function useFabricCanvas(options: UseFabricCanvasOptions = {}) {
       })
       canvas.on('mouse:move', (opt) => {
         if (isPanningRef.current && lastPanPointRef.current) {
-          const vpt = canvas.viewportTransform!
+          const vpt = [...canvas.viewportTransform!] as [number, number, number, number, number, number]
           vpt[4] += opt.e.clientX - lastPanPointRef.current.x
           vpt[5] += opt.e.clientY - lastPanPointRef.current.y
           lastPanPointRef.current = { x: opt.e.clientX, y: opt.e.clientY }
-          canvas.requestRenderAll()
+          canvas.setViewportTransform(vpt)
         }
       })
       canvas.on('mouse:up', () => {

@@ -344,6 +344,7 @@ export default function CardList() {
               onClick={() => navigate(`/deck/${deckId}/study`)}
               disabled={cards.length === 0}
               className="px-4 py-2 bg-green-500 text-white hover:bg-green-600 font-medium text-sm disabled:opacity-40"
+              title="Study due cards with spaced repetition"
             >
               Learn
             </button>
@@ -354,7 +355,7 @@ export default function CardList() {
               }}
               disabled={filteredCards.length === 0}
               className="px-2.5 py-2 bg-green-600 text-white hover:bg-green-700 text-xs border-l border-green-400 disabled:opacity-40"
-              title="Browse cards"
+              title="Flip through cards without affecting review schedule"
             >
               Browse
             </button>
@@ -369,6 +370,7 @@ export default function CardList() {
               }}
               disabled={filteredCards.length === 0}
               className="px-4 py-2 bg-red-500 text-white hover:bg-red-600 font-medium text-sm disabled:opacity-40"
+              title="Type answers to test your recall"
             >
               Test
             </button>
@@ -379,7 +381,7 @@ export default function CardList() {
               }}
               disabled={filteredCards.length < 2}
               className="px-2.5 py-2 bg-red-600 text-white hover:bg-red-700 text-xs border-l border-red-400 disabled:opacity-40"
-              title="Matching game"
+              title="Match fronts to backs in a timed game"
             >
               Match
             </button>
@@ -390,20 +392,21 @@ export default function CardList() {
             <button
               onClick={() => navigate(`/deck/${deckId}/card/new`)}
               className="px-4 py-2 bg-blue-500 text-white hover:bg-blue-600 font-medium text-sm rounded-l-lg"
+              title="Create a new flashcard"
             >
               + Add
             </button>
             <button
               onClick={() => navigate(`/deck/${deckId}/card/bulk`)}
               className="px-2.5 py-2 bg-blue-600 text-white hover:bg-blue-700 text-xs border-l border-blue-400"
-              title="Bulk add cards"
+              title="Add multiple cards at once from a list"
             >
               Bulk
             </button>
             <button
               onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
               className="px-2.5 py-2 bg-blue-700 text-blue-100 hover:bg-blue-800 text-xs border-l border-blue-500 rounded-r-lg"
-              title="Create card from template"
+              title="Create a new card from a saved template"
             >
               Template
             </button>

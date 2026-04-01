@@ -13,9 +13,10 @@ import Placeholder from '@tiptap/extension-placeholder'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { Extension, Node, Mark, mergeAttributes } from '@tiptap/core'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx'
 import { MathBlock, MathInline } from './MathExtension'
+import DictationPlayer from './DictationPlayer'
 
 // Custom font size (extends TextStyle)
 const FontSize = TextStyle.extend({
@@ -142,11 +143,13 @@ export default function RichTextEditor({ content, onChange }: Props) {
   const [showSearch, setShowSearch] = useState(false)
   const [showPageSettings, setShowPageSettings] = useState(false)
   const [showExportMenu, setShowExportMenu] = useState(false)
+  const [showDictation, setShowDictation] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const colorRef = useRef<HTMLDivElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isExternalUpdate = useRef(false)
+  const dictationHighlightRef = useRef<HTMLSpanElement | null>(null)
 
   const editor = useEditor({
     extensions: tiptapExtensions,
@@ -241,17 +244,89 @@ export default function RichTextEditor({ content, onChange }: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  // Get plain text for dictation
+  const getDictationText = useCallback(() => {
+    if (!editor || editor.isDestroyed) return ''
+    try { return editor.getText() } catch { return '' }
+  }, [editor])
+
+  // Highlight a specific word (by index) in the editor DOM
+  const handleHighlightWord = useCallback((wordIndex: number | null) => {
+    // Remove previous highlight
+    if (dictationHighlightRef.current) {
+      const parent = dictationHighlightRef.current.parentNode
+      if (parent) {
+        const text = document.createTextNode(dictationHighlightRef.current.textContent || '')
+        parent.replaceChild(text, dictationHighlightRef.current)
+        parent.normalize()
+      }
+      dictationHighlightRef.current = null
+    }
+
+    if (wordIndex === null || !editor || editor.isDestroyed) return
+
+    try {
+      const editorEl = editor.view.dom
+      if (!editorEl) return
+
+      // Walk text nodes and find the Nth word
+      const walker = document.createTreeWalker(editorEl, NodeFilter.SHOW_TEXT)
+      let globalWordIdx = 0
+
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text
+        const text = node.textContent || ''
+        // Find all words in this text node
+        const wordRegex = /\S+/g
+        let match: RegExpExecArray | null
+        while ((match = wordRegex.exec(text)) !== null) {
+          if (globalWordIdx === wordIndex) {
+            // Found the word — wrap it in a highlight span
+            const range = document.createRange()
+            range.setStart(node, match.index)
+            range.setEnd(node, match.index + match[0].length)
+            const span = document.createElement('span')
+            span.style.backgroundColor = '#818cf8'
+            span.style.color = '#ffffff'
+            span.style.borderRadius = '2px'
+            span.style.padding = '0 1px'
+            span.style.transition = 'background-color 0.15s'
+            range.surroundContents(span)
+            span.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            dictationHighlightRef.current = span
+            return
+          }
+          globalWordIdx++
+        }
+      }
+    } catch {
+      // Editor DOM changed during highlight — safe to ignore
+    }
+  }, [editor])
+
   if (!editor || editor.isDestroyed) return null
 
-  // Guard against view not ready
-  let editorReady = true
-  try { editor.getJSON() } catch { editorReady = false }
-  if (!editorReady) return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading editor...</div>
+  // Guard against view not ready — tiptap can throw if view['dom'] isn't mounted yet
+  try {
+    // Test that the view is accessible — if this throws, the editor isn't ready
+    if (!editor.view?.dom) throw new Error('view not ready')
+    editor.getJSON()
+  } catch {
+    return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading editor...</div>
+  }
 
-  const currentFont = editor.getAttributes('textStyle').fontFamily || fonts[0].value
-  const currentSize = editor.getAttributes('textStyle').fontSize || '14px'
-  const currentHeading = editor.isActive('heading') ? editor.getAttributes('heading').level : 0
-  const wordCount = editor.storage.characterCount?.words() ?? 0
+  let currentFont = fonts[0].value
+  let currentSize = '14px'
+  let currentHeading = 0
+  let wordCount = 0
+  try {
+    currentFont = editor.getAttributes('textStyle').fontFamily || fonts[0].value
+    currentSize = editor.getAttributes('textStyle').fontSize || '14px'
+    currentHeading = editor.isActive('heading') ? editor.getAttributes('heading').level : 0
+    wordCount = editor.storage.characterCount?.words() ?? 0
+  } catch {
+    // Editor view became unavailable mid-render — safe defaults above
+  }
 
   const colors = ['#000000', '#dc2626', '#2563eb', '#16a34a', '#d97706', '#9333ea', '#ec4899', '#6b7280']
 
@@ -499,6 +574,14 @@ export default function RichTextEditor({ content, onChange }: Props) {
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
         </button>
 
+        {/* Dictation (TTS) */}
+        <button onClick={() => setShowDictation(!showDictation)} className={showDictation ? tbActive : tbIdle} title="Dictation — read aloud at adjustable speed">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <path d="M11 5L6 9H2v6h4l5 4V5z" />
+            <path d="M15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14" />
+          </svg>
+        </button>
+
         {/* Page settings gear: line spacing + columns */}
         <div className="relative">
           <button onClick={() => setShowPageSettings(!showPageSettings)} className={showPageSettings ? tbActive : tbIdle} title="Page settings">
@@ -556,6 +639,15 @@ export default function RichTextEditor({ content, onChange }: Props) {
           />
           <button onClick={() => { setShowSearch(false); setSearchQuery('') }} className="text-gray-400 hover:text-gray-600 text-xs">&times;</button>
         </div>
+      )}
+
+      {/* Dictation player */}
+      {showDictation && (
+        <DictationPlayer
+          text={getDictationText()}
+          onHighlightWord={handleHighlightWord}
+          onClose={() => setShowDictation(false)}
+        />
       )}
 
       {/* Editor content */}

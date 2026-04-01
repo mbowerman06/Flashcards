@@ -10,6 +10,33 @@ files:
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 win:
-  target: dir
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: dir
   signAndEditExecutable: false
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.education
+  hardenedRuntime: false
+  gatekeeperAssess: false
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Education
 forceCodeSigning: false
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

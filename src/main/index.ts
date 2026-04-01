@@ -5,13 +5,17 @@ import { initDatabase } from './database'
 import { registerIpcHandlers } from './ipc-handlers'
 
 function createWindow(): void {
+  const isMac = process.platform === 'darwin'
+
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
     show: false,
-    frame: false,
+    frame: isMac, // macOS uses native frame with traffic lights
+    titleBarStyle: isMac ? 'hiddenInset' : undefined, // macOS: hidden title bar with inset traffic lights
+    trafficLightPosition: isMac ? { x: 12, y: 10 } : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

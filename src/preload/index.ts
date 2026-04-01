@@ -76,6 +76,14 @@ const api = {
   backupExport: () => ipcRenderer.invoke('backup:export'),
   backupImport: (data: string) => ipcRenderer.invoke('backup:import', data),
 
+  // TTS (neural voices)
+  ttsGetVoices: () => ipcRenderer.invoke('tts:getVoices'),
+  ttsSynthesize: (text: string, voice: string, rate?: string) => ipcRenderer.invoke('tts:synthesize', text, voice, rate),
+
+  // GitHub Sync
+  githubPush: (repoUrl: string) => ipcRenderer.invoke('github:push', repoUrl),
+  githubPull: (repoUrl: string) => ipcRenderer.invoke('github:pull', repoUrl),
+
   // Window controls
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),

@@ -39,6 +39,8 @@ interface UIStore {
   setSnapToGrid: (v: boolean) => void
   hotkeys: Record<string, string>
   setHotkey: (action: string, key: string) => void
+  githubRepo: string
+  setGithubRepo: (url: string) => void
 }
 
 export const useUIStore = create<UIStore>()(
@@ -98,6 +100,8 @@ export const useUIStore = create<UIStore>()(
       setHotkey: (action, key) => set((state) => ({
         hotkeys: { ...state.hotkeys, [action]: key }
       })),
+      githubRepo: '',
+      setGithubRepo: (url) => set({ githubRepo: url }),
       pinnedDeckIds: new Set(),
       togglePinDeck: (id) => set((state) => {
         const next = new Set(state.pinnedDeckIds)

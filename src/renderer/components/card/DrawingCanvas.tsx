@@ -73,14 +73,15 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
     return () => clearInterval(interval)
   }, [handleSave, readOnly, autoSaveInterval])
 
-  // Resize canvas when measured height changes
+  // Resize canvas when measured height changes (e.g. switching side-by-side ↔ stacked layout)
   useEffect(() => {
     const canvas = fabricRef.current
     if (!canvas || readOnly || canvasHeight) return
     const parent = canvas.getSelectionElement()?.parentElement
     if (parent && parent.clientWidth > 0 && measuredHeight > 0) {
       canvas.setDimensions({ width: parent.clientWidth, height: measuredHeight })
-      canvas.renderAll()
+      // Re-render to prevent content clipping after layout change
+      canvas.requestRenderAll()
     }
   }, [measuredHeight, fabricRef, readOnly, canvasHeight])
 
@@ -111,8 +112,8 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen((prev) => !prev)
-    // Trigger a resize after the layout change settles
-    setTimeout(() => {
+    // Trigger multiple resize checks to handle layout settling at different rates
+    const doResize = () => {
       const canvas = fabricRef.current
       if (!canvas) return
       const parent = containerRef.current
@@ -120,7 +121,10 @@ export default function DrawingCanvas({ drawing, onChange, readOnly, canvasHeigh
         canvas.setDimensions({ width: parent.clientWidth, height: parent.clientHeight })
         canvas.renderAll()
       }
-    }, 50)
+    }
+    setTimeout(doResize, 50)
+    setTimeout(doResize, 150)
+    setTimeout(doResize, 300)
   }, [fabricRef])
 
   // Escape key exits fullscreen
