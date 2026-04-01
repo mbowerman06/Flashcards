@@ -1,6 +1,6 @@
 {
   "name": "flashcards",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "Mikey",
   "description": "Spaced repetition flashcard app with drawing support",
   "main": "./out/main/index.js",
