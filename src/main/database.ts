@@ -119,14 +119,6 @@ function runMigrations(): void {
     )
   `)
 
-  db.run('CREATE INDEX IF NOT EXISTS idx_cards_deck ON cards(deck_id)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_cards_next_review ON cards(next_review)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_cards_sort ON cards(sort_order)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_review_history_card ON review_history(card_id)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_card ON card_tags(card_id)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag_id)')
-  db.run('CREATE INDEX IF NOT EXISTS idx_tags_deck ON tags(deck_id)')
-
   db.run(`
     CREATE TABLE IF NOT EXISTS review_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,4 +189,13 @@ function runMigrations(): void {
   addSortOrder('decks')
   addSortOrder('cards')
   addSortOrder('folders')
+
+  // Indexes — must come after all tables and columns exist
+  db.run('CREATE INDEX IF NOT EXISTS idx_cards_deck ON cards(deck_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_cards_next_review ON cards(next_review)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_cards_sort ON cards(sort_order)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_review_history_card ON review_history(card_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_card ON card_tags(card_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tags_deck ON tags(deck_id)')
 }
